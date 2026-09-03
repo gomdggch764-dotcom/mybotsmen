@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import sqlite3
 import random
 import datetime
@@ -598,4 +599,3 @@ if __name__ == "__main__":
     print("🤖 Бот: @EarnSaveliyBot")
     print("📊 Нажми Ctrl+C для остановки")
     bot.polling(none_stop=True)
-"@ | Out-File -FilePath bot.py -Encoding utf8
