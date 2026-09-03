@@ -1,0 +1,21 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+.venv-1/
+venv/
+env/
+
+# Токены и секреты
+.env
+config.py
+token.txt
+
+# Базы данных
+*.db
+*.sqlite
+
+# Временные файлы
+fake_top.json
+EarnSaveliyBot/
