@@ -1,428 +1,3 @@
-# -*- coding: utf-8 -*-
-import sqlite3
-import random
-import datetime
-import json
-import asyncio
-import logging
-import os
-import requests
-from dotenv import load_dotenv
-from telebot import TeleBot
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-
-load_dotenv()
-
-TOKEN = os.getenv('BOT_TOKEN')
-CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN', '')
-ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]
-
-MIN_EARN = 2.0
-MAX_EARN = 4.0
-DAILY_CLICK_LIMIT = 50
-WITHDRAW_MIN = 120
-REFERRAL_BONUS = 5
-REFERRAL_PERCENT = 10
-DB_NAME = "earn_bot.db"
-FAKE_TOP_FILE = "fake_top.json"
-
-STAR_PACKAGES = [
-    {"id": "stars_50", "stars": 50, "bonus": 5, "price_usd": 1.0},
-    {"id": "stars_100", "stars": 100, "bonus": 15, "price_usd": 2.0},
-    {"id": "stars_250", "stars": 250, "bonus": 50, "price_usd": 5.0},
-    {"id": "stars_500", "stars": 500, "bonus": 125, "price_usd": 10.0},
-    {"id": "stars_1000", "stars": 1000, "bonus": 300, "price_usd": 20.0},
-]
-
-logging.basicConfig(level=logging.INFO)
-
-CRYPTO_API_URL = "https://pay.crypt.bot/api"
-
-def create_crypto_invoice(amount_usd, description, payload):
-    if not CRYPTO_BOT_TOKEN:
-        return None
-    try:
-        url = f"{CRYPTO_API_URL}/createInvoice"
-        headers = {
-            "Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN,
-            "Content-Type": "application/json"
-        }
-        data = {
-            "asset": "USDT",
-            "amount": str(amount_usd),
-            "description": description,
-            "payload": payload,
-            "allow_comments": False,
-            "allow_anonymous": False
-        }
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("ok"):
-                return result["result"]
-        return None
-    except Exception as e:
-        logging.error(f"CryptoBot error: {e}")
-        return None
-
-def init_fake_top():
-    default_fake = [
-        {"username": "@kotnavoine", "balance": 2610},
-        {"username": "@mittsf2", "balance": 1704},
-        {"username": "@demon666_597", "balance": 680},
-        {"username": "@FGPIDORS", "balance": 676},
-        {"username": "@thisgoodworld", "balance": 312},
-        {"username": "⭐ СТАЛЬНОЙ ВОИН", "balance": 287.5},
-        {"username": "🔥 ОГНЕННЫЙ ЛИС", "balance": 254.3},
-        {"username": "💎 АЛМАЗНЫЙ БАРОН", "balance": 221.8},
-        {"username": "👑 ТЁМНЫЙ ВЛАСТЕЛИН", "balance": 198.2},
-        {"username": "🌙 ЛУННЫЙ СТРАЖ", "balance": 167.9}
-    ]
-    try:
-        with open(FAKE_TOP_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            if not data:
-                raise ValueError
-            return data
-    except:
-        with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
-            json.dump(default_fake, f, ensure_ascii=False, indent=2)
-        return default_fake
-
-def init_db():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER UNIQUE,
-        first_name TEXT,
-        username TEXT,
-        balance REAL DEFAULT 0,
-        total_earned REAL DEFAULT 0,
-        total_withdrawn REAL DEFAULT 0,
-        clicks INTEGER DEFAULT 0,
-        avg_earning REAL DEFAULT 0,
-        last_click TEXT,
-        clicks_today INTEGER DEFAULT 0,
-        last_click_date TEXT,
-        last_visit TEXT,
-        referral_code TEXT UNIQUE,
-        referrer_id INTEGER,
-        referral_count INTEGER DEFAULT 0,
-        referral_earned REAL DEFAULT 0,
-        daily_bonus_date TEXT,
-        is_banned INTEGER DEFAULT 0,
-        created_at TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        amount REAL,
-        status TEXT DEFAULT 'pending',
-        requested_at TEXT,
-        completed_at TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS referrals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        referrer_id INTEGER,
-        referred_id INTEGER,
-        created_at TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS payments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER,
-        invoice_id TEXT,
-        package_id TEXT,
-        stars INTEGER,
-        bonus INTEGER,
-        total_added REAL,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT
-    )''')
-    conn.commit()
-    conn.close()
-
-def get_db():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
-
-def get_user(tg_id):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_id,))
-    user = c.fetchone()
-    conn.close()
-    return user
-
-def update_user(tg_id, **kwargs):
-    conn = get_db()
-    c = conn.cursor()
-    for key, val in kwargs.items():
-        c.execute(f"UPDATE users SET {key} = ? WHERE telegram_id = ?", (val, tg_id))
-    conn.commit()
-    conn.close()
-
-def register_user(tg_id, first_name, username, ref_code=None):
-    user = get_user(tg_id)
-    if user:
-        update_user(tg_id, first_name=first_name, username=username, last_visit=datetime.datetime.now().isoformat())
-        return get_user(tg_id)
-    code = f"ref_{tg_id}_{random.randint(1000,9999)}"
-    referrer_id = None
-    if ref_code:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT id FROM users WHERE referral_code = ?", (ref_code,))
-        r = c.fetchone()
-        conn.close()
-        if r:
-            referrer_id = r[0]
-    now = datetime.datetime.now().isoformat()
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''INSERT INTO users (telegram_id, first_name, username, referral_code, referrer_id, created_at, last_visit)
-                 VALUES (?,?,?,?,?,?,?)''', (tg_id, first_name, username, code, referrer_id, now, now))
-    uid = c.lastrowid
-    if referrer_id:
-        c.execute("UPDATE users SET balance = balance + ?, referral_count = referral_count + 1 WHERE id = ?",
-                  (REFERRAL_BONUS, referrer_id))
-        c.execute("INSERT INTO referrals (referrer_id, referred_id, created_at) VALUES (?,?,?)",
-                  (referrer_id, uid, now))
-    conn.commit()
-    conn.close()
-    return get_user(tg_id)
-
-def get_top_users(limit=10):
-    fake_users = init_fake_top()
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT username, balance FROM users WHERE is_banned=0 ORDER BY balance DESC")
-    real_users = c.fetchall()
-    conn.close()
-    all_users = []
-    for u in fake_users:
-        all_users.append({'username': u['username'], 'balance': u['balance'], 'is_fake': True})
-    for u in real_users:
-        all_users.append({'username': u[0] or 'Без имени', 'balance': u[1], 'is_fake': False})
-    all_users.sort(key=lambda x: x['balance'], reverse=True)
-    result = [(u['username'], u['balance']) for u in all_users[:limit]]
-    return result
-
-def get_user_rank(tg_id):
-    fake_users = init_fake_top()
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT telegram_id, balance FROM users WHERE is_banned=0")
-    real_users = c.fetchall()
-    conn.close()
-    all_balances = []
-    user_balance = 0
-    for u in fake_users:
-        all_balances.append(u['balance'])
-    for u in real_users:
-        if u[0] == tg_id:
-            user_balance = u[1]
-        all_balances.append(u[1])
-    rank = 1
-    for bal in all_balances:
-        if bal > user_balance:
-            rank += 1
-    return rank
-
-def get_total_users():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users WHERE is_banned=0")
-    real_count = c.fetchone()[0]
-    conn.close()
-    fake_users = init_fake_top()
-    fake_count = len(fake_users)
-    return real_count + fake_count
-
-def earn_stars(tg_id):
-    user = get_user(tg_id)
-    if not user:
-        return None, "❌ Пользователь не найден"
-    if user[18]:
-        return None, "❌ Вы забанены!"
-    today = datetime.date.today().isoformat()
-    if user[11] == today and user[10] >= DAILY_CLICK_LIMIT:
-        return None, f"⚠️ Лимит {DAILY_CLICK_LIMIT} кликов на сегодня!"
-    amount = round(random.uniform(MIN_EARN, MAX_EARN), 1)
-    new_balance = user[4] + amount
-    new_total = user[5] + amount
-    new_clicks = user[7] + 1
-    new_avg = round(new_total / new_clicks, 2)
-    now = datetime.datetime.now().isoformat()
-    today_date = datetime.date.today().isoformat()
-    new_today = user[10] + 1 if user[11] == today_date else 1
-    update_user(tg_id, balance=new_balance, total_earned=new_total, clicks=new_clicks,
-                avg_earning=new_avg, last_click=now, last_visit=now,
-                clicks_today=new_today, last_click_date=today_date)
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT referrer_id FROM users WHERE telegram_id = ?", (tg_id,))
-    ref = c.fetchone()
-    if ref and ref[0]:
-        bonus = round(amount * REFERRAL_PERCENT / 100, 2)
-        c.execute("UPDATE users SET balance = balance + ?, referral_earned = referral_earned + ? WHERE id = ?",
-                  (bonus, bonus, ref[0]))
-        conn.commit()
-    conn.close()
-    return amount, None
-
-def get_daily_bonus(tg_id):
-    user = get_user(tg_id)
-    if not user:
-        return None, "❌ Пользователь не найден"
-    today = datetime.date.today().isoformat()
-    if user[17] == today:
-        return None, "⚠️ Бонус уже получен сегодня!"
-    amount = random.randint(5, 15)
-    update_user(tg_id, balance=user[4]+amount, total_earned=user[5]+amount,
-                daily_bonus_date=today, last_visit=datetime.datetime.now().isoformat())
-    return amount, None
-
-def main_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("💰 Заработать", "👤 Профиль")
-    kb.row("👥 Друзья", "💸 Вывод")
-    kb.row("🏆 Топ", "🎁 Бонус")
-    kb.row("💎 Пополнить")
-    return kb
-
-def admin_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("📊 Статистика", "👥 Все пользователи")
-    kb.row("🔝 ТОП-20", "✉️ Рассылка")
-    kb.row("◀️ В главное меню")
-    return kb
-
-bot = TeleBot(TOKEN)
-
-@bot.message_handler(commands=['start'])
-def start(msg):
-    uid = msg.from_user.id
-    name = msg.from_user.first_name
-    uname = msg.from_user.username or "без username"
-    ref = msg.text.split()[1] if len(msg.text.split()) > 1 else None
-    user = register_user(uid, name, uname, ref)
-    bonus_msg = ""
-    today = datetime.date.today().isoformat()
-    if user[17] != today:
-        ba = random.randint(5, 15)
-        update_user(uid, balance=user[4]+ba, total_earned=user[5]+ba, daily_bonus_date=today)
-        bonus_msg = f"\n\n🎁 Ежедневный бонус: +{ba} ⭐!"
-    ref_msg = "\n\n👥 Вы пришли по реферальной ссылке!" if user[14] else ""
-    bot.send_message(msg.chat.id,
-        f"⭐ Добро пожаловать в EarnSaveliyBot, {name}!\n\n"
-        f"💰 Баланс: {user[4]:.1f} ⭐\n"
-        f"📈 Заработано: {user[5]:.1f} ⭐{bonus_msg}{ref_msg}\n\n"
-        f"Нажимай «💰 Заработать» чтобы получить от {MIN_EARN} до {MAX_EARN} ⭐!\n"
-        f"Зови друзей и получай {REFERRAL_PERCENT}% от их дохода! 🚀",
-        reply_markup=main_kb())
-
-@bot.message_handler(func=lambda m: m.text == "💰 Заработать")
-def earn(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
-        return
-    if user[18]:
-        bot.send_message(msg.chat.id, "❌ Вы забанены!", reply_markup=main_kb())
-        return
-    
-    amount, err = earn_stars(uid)
-    if err:
-        bot.send_message(msg.chat.id, err, reply_markup=main_kb())
-        return
-    
-    user = get_user(uid)
-    bot.send_message(msg.chat.id,
-        f"⭐ +{amount} ⭐!\n\n"
-        f"💰 Баланс: {user[4]:.1f} ⭐\n"
-        f"📈 Всего: {user[5]:.1f} ⭐\n"
-        f"📊 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
-        reply_markup=main_kb())
-
-@bot.message_handler(func=lambda m: m.text == "👤 Профиль")
-def profile(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
-        return
-    rank = get_user_rank(uid)
-    total = get_total_users()
-    bot.send_message(msg.chat.id,
-        f"👤 ПРОФИЛЬ\n\n"
-        f"🆔 ID: {user[1]}\n👤 Имя: {user[2]}\n📛 @{user[3] or '—'}\n\n"
-        f"💰 Баланс: {user[4]:.1f} ⭐\n📈 Заработано: {user[5]:.1f} ⭐\n💸 Выведено: {user[6]:.1f} ⭐\n"
-        f"🔄 Кликов: {user[7]}\n📊 Средний: {user[8]:.2f} ⭐\n"
-        f"👥 Друзей: {user[15]}\n💰 С рефералов: {user[16]:.1f} ⭐\n"
-        f"🏆 Место: #{rank} из {total}\n"
-        f"🎯 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
-        reply_markup=main_kb())
-
-@bot.message_handler(func=lambda m: m.text == "👥 Друзья")
-def friends(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
-        return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''SELECT u.username, u.created_at FROM users u
-                 JOIN referrals r ON r.referred_id = u.id
-                 WHERE r.referrer_id = ? ORDER BY r.created_at DESC LIMIT 5''', (user[0],))
-    refs = c.fetchall()
-    conn.close()
-    ref_list = "\n".join([f"{i+1}. @{r[0] or '—'} — {r[1][:10]}" for i, r in enumerate(refs)]) or "Пока никого 😢"
-    bot.send_message(msg.chat.id,
-        f"👥 РЕФЕРАЛКА\n\n"
-        f"💰 За друга: +{REFERRAL_BONUS} ⭐\n"
-        f"📊 Пассив: {REFERRAL_PERCENT}% от кликов друга\n\n"
-        f"📋 Ссылка:\nhttps://t.me/{(bot.get_me()).username}?start={user[13]}\n\n"
-        f"👥 Приглашено: {user[15]}\n💰 С рефералов: {user[16]:.1f} ⭐\n\n"
-        f"📋 Последние:\n{ref_list}",
-        reply_markup=main_kb())
-
-@bot.message_handler(func=lambda m: m.text == "🏆 Топ")
-def top(msg):
-    users = get_top_users(10)
-    uid = msg.from_user.id
-    rank = get_user_rank(uid)
-    total = get_total_users()
-    if not users:
-        bot.send_message(msg.chat.id, "Пока нет игроков 😢", reply_markup=main_kb())
-        return
-    text = "🏆 ТОП-10\n\n"
-    medals = ["🥇", "🥈", "🥉"]
-    for i, (uname, bal) in enumerate(users):
-        m = medals[i] if i < 3 else f"{i+1}."
-        text += f"{m} {uname} — {bal:.1f} ⭐\n"
-    text += f"\n📊 Твоё место: #{rank} из {total}"
-    bot.send_message(msg.chat.id, text, reply_markup=main_kb())
-
-@bot.message_handler(func=lambda m: m.text == "🎁 Бонус")
-def bonus(msg):
-    uid = msg.from_user.id
-    amount, err = get_daily_bonus(uid)
-    if err:
-        bot.send_message(msg.chat.id, err, reply_markup=main_kb())
-        return
-    user = get_user(uid)
-    bot.send_message(msg.chat.id,
-        f"🎁 +{amount} ⭐\n\n💰 Баланс: {user[4]:.1f} ⭐\n\nВозвращайся завтра! 🚀",
-        reply_markup=main_kb())
-
-@bot.message_handler(func=lambda m: m.text == "💸 Вывод")
-def withdraw_menu(msg):
-    bot.send_message(msg.chat.id,
-        f"💸 ВЫВОД\n\nМинимум: {WITHDRAW_MIN} ⭐\n\nКоманда: /withdraw X\nПример: /withdraw 120",
-        reply_markup=main_kb())
-
 @bot.message_handler(commands=['withdraw'])
 def withdraw(msg):
     uid = msg.from_user.id
@@ -448,6 +23,8 @@ def withdraw(msg):
     if amount > user[4]:
         bot.send_message(msg.chat.id, f"❌ Недостаточно! У вас: {user[4]:.1f} ⭐")
         return
+    
+    # Сохраняем заявку
     new_balance = user[4] - amount
     new_withdrawn = user[6] + amount
     conn = get_db()
@@ -459,314 +36,163 @@ def withdraw(msg):
               (user[0], amount, now))
     conn.commit()
     conn.close()
+    
+    # Отправляем инструкцию
     bot.send_message(msg.chat.id,
-        f"✅ Заявка на {amount} ⭐ отправлена!\n💰 Остаток: {new_balance:.1f} ⭐",
+        f"📝 ЗАЯВКА НА ВЫВОД: {amount} ⭐\n\n"
+        f"✅ Заявка создана!\n"
+        f"💰 Остаток на балансе: {new_balance:.1f} ⭐\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📹 ДЛЯ ПОЛУЧЕНИЯ ВЫПЛАТЫ:\n\n"
+        f"Снимите видео длительностью от 30 секунд\n\n"
+        f"Вариант 1 (TikTok):\n"
+        f"Снимите видео в TikTok и в описании укажите:\n"
+        f"«@EarnSaveliyBot выручает звёздами! Лучший бот для заработка 🔥»\n\n"
+        f"Вариант 2 (любая соцсеть):\n"
+        f"Снимите обзор бота — покажите как зарабатываете\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📤 Отправьте видео сюда в чат\n"
+        f"👑 Админ проверит и начислит выплату\n\n"
+        f"⚠️ Видео должно быть реальным, без монтажа чужих роликов!",
+        reply_markup=main_kb())
+    
+    # Ждём видео от пользователя
+    bot.register_next_step_handler(msg, check_withdraw_video, amount)
+
+def check_withdraw_video(msg, amount):
+    uid = msg.from_user.id
+    
+    # Проверяем есть ли видео
+    if not msg.video and not msg.video_note and not msg.animation:
+        # Если отправил не видео
+        bot.send_message(msg.chat.id,
+            f"❌ Нужно отправить ВИДЕО!\n\n"
+            f"📹 Снимите видео от 30 секунд:\n"
+            f"• TikTok с описанием «@EarnSaveliyBot выручает звёздами»\n"
+            f"• Или обзор бота\n\n"
+            f"Отправьте видео файлом или ссылкой на TikTok",
+            reply_markup=main_kb())
+        bot.register_next_step_handler(msg, check_withdraw_video, amount)
+        return
+    
+    # Видео получено — отправляем админу на проверку
+    video = msg.video or msg.video_note or msg.animation
+    user_info = f"@{msg.from_user.username or '—'} ({msg.from_user.id})"
+    
+    # Отправляем админам
+    for admin_id in ADMIN_IDS:
+        try:
+            if msg.video:
+                bot.send_video(admin_id, msg.video.file_id,
+                    caption=f"📹 ЗАЯВКА НА ВЫВОД\n\n"
+                    f"👤 Пользователь: {user_info}\n"
+                    f"💰 Сумма: {amount} ⭐\n"
+                    f"📅 Дата: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                    f"✅ /approve {uid} {amount}\n"
+                    f"❌ /reject {uid}")
+            elif msg.video_note:
+                bot.send_video_note(admin_id, msg.video_note.file_id)
+                bot.send_message(admin_id,
+                    f"📹 ЗАЯВКА НА ВЫВОД\n\n"
+                    f"👤 Пользователь: {user_info}\n"
+                    f"💰 Сумма: {amount} ⭐\n\n"
+                    f"✅ /approve {uid} {amount}\n"
+                    f"❌ /reject {uid}")
+            elif msg.animation:
+                bot.send_animation(admin_id, msg.animation.file_id,
+                    caption=f"📹 ЗАЯВКА НА ВЫВОД\n\n"
+                    f"👤 Пользователь: {user_info}\n"
+                    f"💰 Сумма: {amount} ⭐\n\n"
+                    f"✅ /approve {uid} {amount}\n"
+                    f"❌ /reject {uid}")
+        except Exception as e:
+            logging.error(f"Ошибка отправки админу: {e}")
+    
+    bot.send_message(msg.chat.id,
+        f"✅ ВИДЕО ОТПРАВЛЕНО!\n\n"
+        f"📹 Ваше видео отправлено на проверку\n"
+        f"💰 Сумма: {amount} ⭐\n\n"
+        f"⏳ Ожидайте проверки админом\n"
+        f"📩 Вы получите уведомление после проверки",
         reply_markup=main_kb())
 
-# ============ ПОПОЛНЕНИЕ БАЛАНСА (CryptoBot) ============
-
-@bot.message_handler(func=lambda m: m.text == "💎 Пополнить")
-def top_up_menu(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
-        return
-    
-    if not CRYPTO_BOT_TOKEN:
-        bot.send_message(msg.chat.id, "❌ Оплата временно недоступна")
-        return
-    
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    for pkg in STAR_PACKAGES:
-        total = pkg["stars"] + pkg["bonus"]
-        keyboard.add(InlineKeyboardButton(
-            text=f"⭐ {pkg['stars']} + {pkg['bonus']} бонус = {total} ⭐ (${pkg['price_usd']})",
-            callback_data=f"buy_{pkg['id']}"
-        ))
-    
-    bot.send_message(msg.chat.id,
-        "💎 ПОПОЛНЕНИЕ БАЛАНСА\n\n"
-        "Выберите пакет:\n\n"
-        "Оплата через CryptoBot (USDT/TON)",
-        reply_markup=keyboard)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
-def process_purchase(call):
-    uid = call.from_user.id
-    package_id = call.data.replace("buy_", "")
-    
-    package = None
-    for pkg in STAR_PACKAGES:
-        if pkg["id"] == package_id:
-            package = pkg
-            break
-    
-    if not package:
-        bot.answer_callback_query(call.id, "❌ Пакет не найден")
-        return
-    
-    total_stars = package["stars"] + package["bonus"]
-    
-    invoice = create_crypto_invoice(
-        amount_usd=package["price_usd"],
-        description=f"Покупка {package['stars']}⭐ + {package['bonus']}⭐ бонус для EarnSaveliyBot",
-        payload=f"{uid}_{package_id}"
-    )
-    
-    if not invoice:
-        bot.answer_callback_query(call.id, "❌ Ошибка создания платежа")
-        return
-    
-    invoice_id = invoice.get("invoice_id")
-    pay_url = invoice.get("pay_url") or invoice.get("bot_invoice_url")
-    
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("INSERT INTO payments (telegram_id, invoice_id, package_id, stars, bonus, total_added, created_at) VALUES (?,?,?,?,?,?,?)",
-              (uid, invoice_id, package_id, package["stars"], package["bonus"], total_stars, datetime.datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-    
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton(text="💳 Оплатить", url=pay_url))
-    keyboard.add(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_pay_{invoice_id}"))
-    
-    bot.send_message(call.message.chat.id,
-        f"💎 ПОКУПКА: {package['stars']} ⭐ + {package['bonus']} бонус\n\n"
-        f"💰 К оплате: ${package['price_usd']}\n"
-        f"🎁 Вы получите: {total_stars} ⭐\n\n"
-        f"Нажмите «Оплатить» и после оплаты нажмите «Я оплатил»",
-        reply_markup=keyboard)
-    
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("check_pay_"))
-def check_payment(call):
-    uid = call.from_user.id
-    invoice_id = call.data.replace("check_pay_", "")
-    
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM payments WHERE invoice_id = ? AND telegram_id = ?", (invoice_id, uid))
-    payment = c.fetchone()
-    
-    if not payment:
-        bot.answer_callback_query(call.id, "❌ Платёж не найден")
-        conn.close()
-        return
-    
-    if payment[7] == 'completed':
-        bot.answer_callback_query(call.id, "✅ Уже начислено!")
-        conn.close()
-        return
-    
-    try:
-        url = f"{CRYPTO_API_URL}/getInvoices"
-        headers = {
-            "Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN,
-            "Content-Type": "application/json"
-        }
-        data = {"invoice_ids": invoice_id}
-        response = requests.post(url, headers=headers, json=data)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("ok") and result["result"].get("items"):
-                invoice = result["result"]["items"][0]
-                if invoice.get("status") == "paid":
-                    total_added = payment[6]
-                    user = get_user(uid)
-                    if user:
-                        new_balance = user[4] + total_added
-                        update_user(uid, balance=new_balance)
-                        
-                        c.execute("UPDATE payments SET status = 'completed' WHERE invoice_id = ?", (invoice_id,))
-                        conn.commit()
-                        conn.close()
-                        
-                        bot.send_message(call.message.chat.id,
-                            f"✅ ОПЛАТА УСПЕШНА!\n\n"
-                            f"💰 Начислено: {total_added} ⭐\n"
-                            f"💰 Новый баланс: {new_balance:.1f} ⭐",
-                            reply_markup=main_kb())
-                        bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
-                        return
-                    else:
-                        conn.close()
-                        bot.answer_callback_query(call.id, "❌ Пользователь не найден")
-                        return
-                else:
-                    conn.close()
-                    bot.answer_callback_query(call.id, "❌ Платёж не найден. Попробуйте позже")
-                    return
-            
-        conn.close()
-        bot.answer_callback_query(call.id, "❌ Ошибка проверки")
-    except Exception as e:
-        conn.close()
-        bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)}")
-
-# ============ АДМИН ============
-
-@bot.message_handler(commands=['admin'])
-def admin(msg):
+# Команда для админа — одобрить
+@bot.message_handler(commands=['approve'])
+def approve_withdraw(msg):
     if msg.from_user.id not in ADMIN_IDS:
-        bot.send_message(msg.chat.id, "❌ Нет доступа")
-        return
-    bot.send_message(msg.chat.id, "🛡️ АДМИН-ПАНЕЛЬ", reply_markup=admin_kb())
-
-@bot.message_handler(commands=['addfake'])
-def add_fake(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        bot.send_message(msg.chat.id, "❌ Нет доступа")
         return
     args = msg.text.split()
     if len(args) < 3:
-        bot.send_message(msg.chat.id, "❌ Используй: /addfake @username 1000")
+        bot.send_message(msg.chat.id, "❌ Формат: /approve [user_id] [amount]")
         return
-    username = args[1]
     try:
-        balance = float(args[2])
+        target_uid = int(args[1])
+        amount = float(args[2])
     except:
-        bot.send_message(msg.chat.id, "❌ Баланс должен быть числом")
+        bot.send_message(msg.chat.id, "❌ Неверные данные")
         return
-    fake_users = init_fake_top()
-    fake_users.append({"username": username, "balance": balance})
-    fake_users.sort(key=lambda x: x['balance'], reverse=True)
-    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
-        json.dump(fake_users, f, ensure_ascii=False, indent=2)
-    bot.send_message(msg.chat.id, f"✅ Добавлен {username} с балансом {balance} ⭐")
+    
+    # Обновляем статус в БД
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE withdrawals SET status = 'completed', completed_at = ? WHERE user_id = ? AND amount = ? AND status = 'pending'",
+              (datetime.datetime.now().isoformat(), target_uid, amount))
+    conn.commit()
+    conn.close()
+    
+    # Уведомляем пользователя
+    try:
+        bot.send_message(target_uid,
+            f"✅ ВЫПЛАТА ОДОБРЕНА!\n\n"
+            f"💰 Сумма: {amount} ⭐\n"
+            f"🎉 Поздравляем! Выплата будет отправлена в ближайшее время",
+            reply_markup=main_kb())
+    except:
+        pass
+    
+    bot.send_message(msg.chat.id, f"✅ Выплата {amount} ⭐ для {target_uid} одобрена!")
 
-@bot.message_handler(commands=['fake_list'])
-def fake_list(msg):
+# Команда для админа — отклонить
+@bot.message_handler(commands=['reject'])
+def reject_withdraw(msg):
     if msg.from_user.id not in ADMIN_IDS:
-        bot.send_message(msg.chat.id, "❌ Нет доступа")
-        return
-    fake_users = init_fake_top()
-    if not fake_users:
-        bot.send_message(msg.chat.id, "📭 Фейк-топ пуст")
-        return
-    text = "📋 ФЕЙК-ТОП\n\n"
-    for i, u in enumerate(fake_users[:20]):
-        text += f"{i+1}. {u['username']} — {u['balance']} ⭐\n"
-    bot.send_message(msg.chat.id, text)
-
-@bot.message_handler(commands=['removefake'])
-def remove_fake(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        bot.send_message(msg.chat.id, "❌ Нет доступа")
         return
     args = msg.text.split()
     if len(args) < 2:
-        bot.send_message(msg.chat.id, "❌ Используй: /removefake @username")
+        bot.send_message(msg.chat.id, "❌ Формат: /reject [user_id]")
         return
-    username = args[1]
-    fake_users = init_fake_top()
-    new_list = [u for u in fake_users if u['username'] != username]
-    if len(new_list) == len(fake_users):
-        bot.send_message(msg.chat.id, f"❌ {username} не найден в фейк-топе")
+    try:
+        target_uid = int(args[1])
+    except:
+        bot.send_message(msg.chat.id, "❌ Неверный ID")
         return
-    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
-        json.dump(new_list, f, ensure_ascii=False, indent=2)
-    bot.send_message(msg.chat.id, f"✅ Удалён {username} из фейк-топа")
-
-@bot.message_handler(func=lambda m: m.text == "◀️ В главное меню")
-def back(msg):
-    bot.send_message(msg.chat.id, "✅ Возврат", reply_markup=main_kb())
-
-@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
-def stats(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-    total = get_total_users()
+    
+    # Находим сумму
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT SUM(total_earned) FROM users WHERE is_banned=0")
-    earned = c.fetchone()[0] or 0
-    c.execute("SELECT COUNT(*) FROM referrals")
-    refs = c.fetchone()[0] or 0
-    c.execute("SELECT COUNT(*) FROM payments WHERE status='completed'")
-    payments = c.fetchone()[0] or 0
-    c.execute("SELECT username, balance FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 1")
-    top = c.fetchone()
+    c.execute("SELECT amount FROM withdrawals WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", (target_uid,))
+    result = c.fetchone()
     conn.close()
-    top_text = f"@{top[0] or '—'} ({top[1]:.1f} ⭐)" if top else "Нет"
-    bot.send_message(msg.chat.id,
-        f"📊 СТАТИСТИКА\n\n"
-        f"👥 Всего: {total}\n"
-        f"💰 Заработано: {earned:.1f} ⭐\n"
-        f"👥 Рефералов: {refs}\n"
-        f"💳 Платежей: {payments}\n"
-        f"🏆 Топ-1: {top_text}",
-        reply_markup=admin_kb())
-
-@bot.message_handler(func=lambda m: m.text == "👥 Все пользователи")
-def all_users(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT username, balance, created_at FROM users WHERE is_banned=0 ORDER BY created_at DESC LIMIT 20")
-    users = c.fetchall()
-    conn.close()
-    if not users:
-        bot.send_message(msg.chat.id, "Нет пользователей", reply_markup=admin_kb())
-        return
-    text = "👥 ПОСЛЕДНИЕ 20\n\n"
-    for u in users:
-        text += f"@{u[0] or '—'} — {u[1]:.1f} ⭐ ({u[2][:10]})\n"
-    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
-
-@bot.message_handler(func=lambda m: m.text == "🔝 ТОП-20")
-def top20(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT username, balance, clicks FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 20")
-    users = c.fetchall()
-    conn.close()
-    text = "🔝 ТОП-20\n\n"
-    medals = ["🥇","🥈","🥉"]
-    for i, (uname, bal, clicks) in enumerate(users):
-        m = medals[i] if i < 3 else f"{i+1}."
-        text += f"{m} @{uname or '—'} — {bal:.1f} ⭐ ({clicks} кликов)\n"
-    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
-
-@bot.message_handler(func=lambda m: m.text == "✉️ Рассылка")
-def mail_start(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-    bot.send_message(msg.chat.id, "✉️ Введи текст рассылки (или /cancel для отмены)", reply_markup=admin_kb())
-    bot.register_next_step_handler(msg, mail_send)
-
-def mail_send(msg):
-    if msg.text == "/cancel":
-        bot.send_message(msg.chat.id, "❌ Отменено", reply_markup=admin_kb())
-        return
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT telegram_id FROM users WHERE is_banned=0")
-    users = c.fetchall()
-    conn.close()
-    sent = 0
-    for u in users:
-        try:
-            bot.send_message(u[0], f"📢 ОБЪЯВЛЕНИЕ\n\n{msg.text}")
-            sent += 1
-        except:
-            pass
-    bot.send_message(msg.chat.id, f"✅ Отправлено {sent} пользователям", reply_markup=admin_kb())
-
-if __name__ == "__main__":
-    print("📦 Инициализация БД...")
-    init_db()
-    print("✅ БД готова")
-    print("📦 Инициализация фейк-топа...")
-    init_fake_top()
-    print("✅ Фейк-топ загружен")
-    print("🚀 Запуск бота...")
-    print("🤖 Бот: @EarnSaveliyBot")
-    print("📊 Нажми Ctrl+C для остановки")
-    bot.polling(none_stop=True)
+    
+    if result:
+        amount = result[0]
+        # Возвращаем средства
+        user = get_user(target_uid)
+        if user:
+            update_user(target_uid, balance=user[4] + amount)
+    
+    # Уведомляем пользователя
+    try:
+        bot.send_message(target_uid,
+            f"❌ ВЫПЛАТА ОТКЛОНЕНА\n\n"
+            f"😔 К сожалению, ваше видео не прошло проверку\n"
+            f"💰 Сумма {amount} ⭐ возвращена на баланс\n\n"
+            f"📹 Попробуйте снять новое видео:\n"
+            f"• От 30 секунд\n"
+            f"• Реальное, не скопированное\n"
+            f"• С упоминанием @EarnSaveliyBot",
+            reply_markup=main_kb())
+    except:
+        pass
+    
+    bot.send_message(msg.chat.id, f"❌ Выплата для {target_uid} отклонена")
