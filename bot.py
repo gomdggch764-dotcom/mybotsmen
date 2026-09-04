@@ -6,6 +6,7 @@ import json
 import asyncio
 import logging
 import os
+import time
 from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
@@ -26,11 +27,16 @@ REFERRAL_PERCENT = 10
 DB_NAME = "earn_bot.db"
 FAKE_TOP_FILE = "fake_top.json"
 
+# Время запуска бота
+START_TIME = time.time()
+ERROR_COUNT = 0
+
 # Каналы для подписки
 CHANNELS = [
     {'id': '@spookyscripts', 'name': 'Spooky Scripts', 'url': 'https://t.me/spookyscripts'},
     {'id': '-1003788328996', 'name': 'SPOOKY MOD', 'url': 'https://t.me/+GMHDq5Fij2M5MmFh'},
-    {'id': '-1004356916182', 'name': 'OUTLOW SCRIPTS', 'url': 'https://t.me/+GIrw6Qj8tkZiMzhh'}
+    {'id': '-1004356916182', 'name': 'OUTLOW SCRIPTS', 'url': 'https://t.me/+GIrw6Qj8tkZiMzhh'},
+    {'id': '@EarnSaveliy', 'name': 'EarnSaveliy', 'url': 'https://t.me/EarnSaveliy'}
 ]
 
 def init_fake_top():
@@ -265,8 +271,9 @@ def main_kb():
 
 def admin_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("📊 Статистика", "👥 Все пользователи")
-    kb.row("🔝 ТОП-20", "✉️ Рассылка")
+    kb.row("📊 Статистика", "👥 Топ-50")
+    kb.row("🔍 Поиск", "✉️ Рассылка")
+    kb.row("💰 Начислить", "🚫 Бан")
     kb.row("◀️ В главное меню")
     return kb
 
@@ -355,6 +362,7 @@ def check_sub(call):
 
 @bot.message_handler(func=lambda m: m.text == "💰 Заработать")
 def earn(msg):
+    global ERROR_COUNT
     uid = msg.from_user.id
     user = get_user(uid)
     if not user:
@@ -385,6 +393,7 @@ def earn(msg):
         else:
             bot.send_message(msg.chat.id, "❌ Ошибка рекламы")
     except Exception as e:
+        ERROR_COUNT += 1
         logging.error(f"Earn error: {e}")
         bot.send_message(msg.chat.id, "❌ Ошибка")
 
@@ -486,61 +495,14 @@ def withdraw(msg):
         f"✅ Заявка на {amount} ⭐ отправлена!",
         reply_markup=main_kb())
 
+# ========== АДМИН-ПАНЕЛЬ ==========
+
 @bot.message_handler(commands=['admin'])
 def admin(msg):
     if msg.from_user.id not in ADMIN_IDS:
+        bot.send_message(msg.chat.id, "❌ Нет доступа")
         return
     bot.send_message(msg.chat.id, "🛡️ АДМИН-ПАНЕЛЬ", reply_markup=admin_kb())
-
-@bot.message_handler(commands=['addfake'])
-def add_fake(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-    args = msg.text.split()
-    if len(args) < 3:
-        bot.send_message(msg.chat.id, "/addfake @username 1000")
-        return
-    username = args[1]
-    try:
-        balance = float(args[2])
-    except:
-        bot.send_message(msg.chat.id, "Баланс - число")
-        return
-    fake_users = init_fake_top()
-    fake_users.append({"username": username, "balance": balance})
-    fake_users.sort(key=lambda x: x['balance'], reverse=True)
-    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
-        json.dump(fake_users, f, ensure_ascii=False, indent=2)
-    bot.send_message(msg.chat.id, f"✅ Добавлен {username}")
-
-@bot.message_handler(commands=['fake_list'])
-def fake_list(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-    fake_users = init_fake_top()
-    text = "📋 ФЕЙК-ТОП\n\n"
-    for i, u in enumerate(fake_users[:20]):
-        text += f"{i+1}. {u['username']} — {u['balance']} ⭐\n"
-    bot.send_message(msg.chat.id, text)
-
-@bot.message_handler(commands=['removefake'])
-def remove_fake(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        return
-    args = msg.text.split()
-    if len(args) < 2:
-        bot.send_message(msg.chat.id, "/removefake @username")
-        return
-    username = args[1]
-    fake_users = init_fake_top()
-    new_list = [u for u in fake_users if u['username'] != username]
-    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
-        json.dump(new_list, f, ensure_ascii=False, indent=2)
-    bot.send_message(msg.chat.id, f"✅ Удалён {username}")
-
-@bot.message_handler(func=lambda m: m.text == "◀️ В главное меню")
-def back(msg):
-    bot.send_message(msg.chat.id, "✅ Возврат", reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "📊 Статистика")
 def stats(msg):
@@ -549,14 +511,64 @@ def stats(msg):
     total = get_total_users()
     active = get_active_users()
     clicks = get_total_clicks()
+    uptime = int(time.time() - START_TIME)
+    hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
+    seconds = uptime % 60
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT SUM(total_earned) FROM users WHERE is_banned=0")
+    earned = c.fetchone()[0] or 0
+    c.execute("SELECT SUM(total_withdrawn) FROM users WHERE is_banned=0")
+    withdrawn = c.fetchone()[0] or 0
+    conn.close()
+    
     bot.send_message(msg.chat.id,
-        f"📊 СТАТИСТИКА\n\n👥 Всего: {total}\n🟢 Активных: {active}\n🔄 Кликов: {clicks}",
+        f"📊 СТАТИСТИКА\n\n"
+        f"👥 Участников: {total}\n"
+        f"🟢 Активных (24ч): {active}\n"
+        f"🔄 Всего кликов: {clicks}\n"
+        f"⭐ Заработано: {earned:.1f}\n"
+        f"💸 Выведено: {withdrawn:.1f}\n"
+        f"❌ Ошибок: {ERROR_COUNT}\n"
+        f"⏱ Время работы: {hours}ч {minutes}м {seconds}с",
         reply_markup=admin_kb())
 
-# Запуск
-if __name__ == "__main__":
-    init_db()
-    init_fake_top()
-    print("Бот запущен!")
-    bot.remove_webhook()
-    bot.polling(none_stop=True)
+@bot.message_handler(func=lambda m: m.text == "👥 Топ-50")
+def top50(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT telegram_id, first_name, username, balance, total_earned, clicks FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 50")
+    users = c.fetchall()
+    conn.close()
+    
+    if not users:
+        bot.send_message(msg.chat.id, "Нет пользователей", reply_markup=admin_kb())
+        return
+    
+    text = "👥 ТОП-50 ПО БАЛАНСУ\n\n"
+    for i, u in enumerate(users):
+        text += f"{i+1}. {u[1]} (@{u[2] or '—'}) — {u[3]:.1f} ⭐\n"
+    
+    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "🔍 Поиск")
+def search_prompt(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    bot.send_message(msg.chat.id, 
+        "🔍 ПОИСК ПОЛЬЗОВАТЕЛЯ\n\n"
+        "/user ID — по Telegram ID\n"
+        "/user @username — по username",
+        reply_markup=admin_kb())
+
+@bot.message_handler(commands=['user'])
+def user_info(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    args = msg.text.split()
+    if len(args) < 2:
+        
