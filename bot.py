@@ -9,7 +9,6 @@ import os
 from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-from ads import show_advert
 
 load_dotenv()
 
@@ -27,23 +26,11 @@ REFERRAL_PERCENT = 10
 DB_NAME = "earn_bot.db"
 FAKE_TOP_FILE = "fake_top.json"
 
-# Обязательные каналы для подписки
-REQUIRED_CHANNELS = [
-    {
-        'id': '@spookyscripts',
-        'name': 'Spooky Scripts',
-        'url': 'https://t.me/spookyscripts'
-    },
-    {
-        'id': '-1003788328996',
-        'name': 'SPOOKY MOD',
-        'url': 'https://t.me/+GMHDq5Fij2M5MmFh'
-    },
-    {
-        'id': '-1004356916182',
-        'name': 'OUTLOW SCRIPTS',
-        'url': 'https://t.me/+GIrw6Qj8tkZiMzhh'
-    }
+# Каналы для подписки
+CHANNELS = [
+    {'id': '@spookyscripts', 'name': 'Spooky Scripts', 'url': 'https://t.me/spookyscripts'},
+    {'id': '-1003788328996', 'name': 'SPOOKY MOD', 'url': 'https://t.me/+GMHDq5Fij2M5MmFh'},
+    {'id': '-1004356916182', 'name': 'OUTLOW SCRIPTS', 'url': 'https://t.me/+GIrw6Qj8tkZiMzhh'}
 ]
 
 def init_fake_top():
@@ -52,7 +39,12 @@ def init_fake_top():
         {"username": "@mittsf2", "balance": 1704},
         {"username": "@demon666_597", "balance": 680},
         {"username": "@FGPIDORS", "balance": 676},
-        {"username": "@thisgoodworld", "balance": 312}
+        {"username": "@thisgoodworld", "balance": 312},
+        {"username": "⭐ СТАЛЬНОЙ ВОИН", "balance": 287.5},
+        {"username": "🔥 ОГНЕННЫЙ ЛИС", "balance": 254.3},
+        {"username": "💎 АЛМАЗНЫЙ БАРОН", "balance": 221.8},
+        {"username": "👑 ТЁМНЫЙ ВЛАСТЕЛИН", "balance": 198.2},
+        {"username": "🌙 ЛУННЫЙ СТРАЖ", "balance": 167.9}
     ]
     try:
         with open(FAKE_TOP_FILE, 'r', encoding='utf-8') as f:
@@ -280,54 +272,26 @@ def admin_kb():
 
 bot = TeleBot(TOKEN)
 
-def check_subscriptions(user_id):
-    """Проверяет подписку на все обязательные каналы"""
-    not_subscribed = []
-    for channel in REQUIRED_CHANNELS:
-        try:
-            member = bot.get_chat_member(channel['id'], user_id)
-            if member.status in ['left', 'kicked', 'banned']:
-                not_subscribed.append(channel)
-        except Exception as e:
-            logging.error(f"Ошибка проверки подписки на {channel['id']}: {e}")
-    return not_subscribed
+def is_subscribed(user_id, channel_id):
+    try:
+        member = bot.get_chat_member(channel_id, user_id)
+        return member.status not in ['left', 'kicked', 'banned']
+    except:
+        return True
 
-def create_subscription_keyboard():
-    """Создаёт клавиатуру с кнопками для подписки"""
+def get_unsubscribed(user_id):
+    result = []
+    for ch in CHANNELS:
+        if not is_subscribed(user_id, ch['id']):
+            result.append(ch)
+    return result
+
+def sub_keyboard():
     kb = InlineKeyboardMarkup(row_width=1)
-    for channel in REQUIRED_CHANNELS:
-        kb.add(InlineKeyboardButton(f"📢 {channel['name']}", url=channel['url']))
-    kb.add(InlineKeyboardButton("✅ Я подписался!", callback_data="check_sub"))
+    for ch in CHANNELS:
+        kb.add(InlineKeyboardButton(f"📢 {ch['name']}", url=ch['url']))
+    kb.add(InlineKeyboardButton("✅ Проверить", callback_data="check_sub"))
     return kb
-
-def send_subscription_required(message):
-    """Отправляет сообщение о необходимости подписки"""
-    not_subscribed = check_subscriptions(message.from_user.id)
-    channels_list = "\n".join([f"• {ch['name']} - {ch['url']}" for ch in not_subscribed])
-    bot.send_message(
-        message.chat.id,
-        f"⚠️ Для использования бота необходимо подписаться на все каналы:\n\n"
-        f"{channels_list}\n\n"
-        f"После подписки нажмите кнопку «✅ Я подписался!»",
-        reply_markup=create_subscription_keyboard()
-    )
-
-def subscription_required(func):
-    def wrapper(message):
-        uid = message.from_user.id
-        
-        # Пропускаем админов
-        if uid in ADMIN_IDS:
-            return func(message)
-        
-        # Проверяем подписку
-        not_subscribed = check_subscriptions(uid)
-        if not_subscribed:
-            send_subscription_required(message)
-            return
-        
-        return func(message)
-    return wrapper
 
 @bot.message_handler(commands=['start'])
 def start(msg):
@@ -335,96 +299,75 @@ def start(msg):
     name = msg.from_user.first_name
     uname = msg.from_user.username or "без username"
     ref = msg.text.split()[1] if len(msg.text.split()) > 1 else None
-    user = register_user(uid, name, uname, ref)
+    register_user(uid, name, uname, ref)
     
-    # Проверяем подписку для ВСЕХ пользователей
-    not_subscribed = check_subscriptions(uid)
-    
-    if not_subscribed:
-        channels_list = "\n".join([f"• {ch['name']} - {ch['url']}" for ch in not_subscribed])
+    unsub = get_unsubscribed(uid)
+    if unsub and uid not in ADMIN_IDS:
+        channels_text = "\n".join([f"• {ch['name']}" for ch in unsub])
         bot.send_message(
             msg.chat.id,
-            f"⚠️ Для использования бота необходимо подписаться на все каналы:\n\n"
-            f"{channels_list}\n\n"
-            f"После подписки нажмите кнопку «✅ Я подписался!»",
-            reply_markup=create_subscription_keyboard()
+            f"⚠️ Подпишитесь на каналы:\n\n{channels_text}\n\nЗатем нажмите «✅ Проверить»",
+            reply_markup=sub_keyboard()
         )
         return
     
+    user = get_user(uid)
     bonus_msg = ""
     today = datetime.date.today().isoformat()
     if user[17] != today:
         ba = random.randint(5, 15)
         update_user(uid, balance=user[4]+ba, total_earned=user[5]+ba, daily_bonus_date=today)
-        bonus_msg = f"\n\n🎁 Ежедневный бонус: +{ba} ⭐!"
-    ref_msg = "\n\n👥 Вы пришли по реферальной ссылке!" if user[14] else ""
+        bonus_msg = f"\n\n🎁 Бонус: +{ba} ⭐!"
     bot.send_message(msg.chat.id,
-        f"⭐ Добро пожаловать в EarnSaveliyBot, {name}!\n\n"
+        f"⭐ Добро пожаловать, {name}!\n\n"
         f"💰 Баланс: {user[4]:.1f} ⭐\n"
-        f"📈 Заработано: {user[5]:.1f} ⭐{bonus_msg}{ref_msg}\n\n"
-        f"Нажимай «💰 Заработать» и смотри рекламу, чтобы получить от {MIN_EARN} до {MAX_EARN} ⭐!\n"
-        f"Зови друзей и получай {REFERRAL_PERCENT}% от их дохода! 🚀",
+        f"📈 Заработано: {user[5]:.1f} ⭐{bonus_msg}\n\n"
+        f"Жми «💰 Заработать» и получай ⭐!",
         reply_markup=main_kb())
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
-def check_sub_callback(call):
+def check_sub(call):
     uid = call.from_user.id
-    not_subscribed = check_subscriptions(uid)
+    unsub = get_unsubscribed(uid)
     
-    if not_subscribed:
-        channels_list = "\n".join([f"• {ch['name']}" for ch in not_subscribed])
-        bot.answer_callback_query(call.id, "❌ Вы не подписаны на все каналы!", show_alert=True)
+    if unsub:
+        channels_text = "\n".join([f"• {ch['name']}" for ch in unsub])
+        bot.answer_callback_query(call.id, "❌ Не подписан!", show_alert=True)
         try:
             bot.edit_message_text(
-                f"⚠️ Вы не подписаны на:\n\n{channels_list}\n\n"
-                f"Подпишитесь и нажмите «✅ Я подписался!» снова",
+                f"⚠️ Остались каналы:\n\n{channels_text}\n\nНажмите «✅ Проверить» после подписки",
                 call.message.chat.id,
                 call.message.message_id,
-                reply_markup=create_subscription_keyboard()
+                reply_markup=sub_keyboard()
             )
         except:
             pass
     else:
-        bot.answer_callback_query(call.id, "✅ Подписка подтверждена!", show_alert=True)
+        bot.answer_callback_query(call.id, "✅ Готово!", show_alert=True)
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
-        
         user = get_user(uid)
-        if not user:
-            user = register_user(uid, call.from_user.first_name, call.from_user.username or "без username")
-        
-        bonus_msg = ""
-        today = datetime.date.today().isoformat()
-        if user[17] != today:
-            ba = random.randint(5, 15)
-            update_user(uid, balance=user[4]+ba, total_earned=user[5]+ba, daily_bonus_date=today)
-            bonus_msg = f"\n\n🎁 Ежедневный бонус: +{ba} ⭐!"
-        
-        bot.send_message(
-            call.message.chat.id,
-            f"⭐ Добро пожаловать в EarnSaveliyBot, {call.from_user.first_name}!\n\n"
-            f"💰 Баланс: {user[4]:.1f} ⭐\n"
-            f"📈 Заработано: {user[5]:.1f} ⭐{bonus_msg}\n\n"
-            f"Нажимай «💰 Заработать» и смотри рекламу, чтобы получить от {MIN_EARN} до {MAX_EARN} ⭐!\n"
-            f"Зови друзей и получай {REFERRAL_PERCENT}% от их дохода! 🚀",
-            reply_markup=main_kb()
-        )
+        bot.send_message(call.message.chat.id,
+            f"⭐ Добро пожаловать!\n\n💰 Баланс: {user[4]:.1f} ⭐\n\nЖми «💰 Заработать»!",
+            reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "💰 Заработать")
-@subscription_required
 def earn(msg):
     uid = msg.from_user.id
     user = get_user(uid)
     if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
-        return
-    if user[18]:
-        bot.send_message(msg.chat.id, "❌ Вы забанены!", reply_markup=main_kb())
+        bot.send_message(msg.chat.id, "Напишите /start")
         return
     
-    bot.send_message(msg.chat.id, "📺 Показываем рекламу... Пожалуйста, подождите!")
+    unsub = get_unsubscribed(uid)
+    if unsub and uid not in ADMIN_IDS:
+        channels_text = "\n".join([f"• {ch['name']}" for ch in unsub])
+        bot.send_message(msg.chat.id, f"⚠️ Подпишитесь:\n\n{channels_text}", reply_markup=sub_keyboard())
+        return
+    
+    bot.send_message(msg.chat.id, "📺 Реклама...")
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -433,88 +376,62 @@ def earn(msg):
         if success:
             amount, err = earn_stars(uid)
             if err:
-                bot.send_message(msg.chat.id, err, reply_markup=main_kb())
+                bot.send_message(msg.chat.id, err)
                 return
             user = get_user(uid)
             bot.send_message(msg.chat.id,
-                f"⭐ +{amount} ⭐ за просмотр рекламы!\n\n"
-                f"💰 Баланс: {user[4]:.1f} ⭐\n"
-                f"📈 Всего: {user[5]:.1f} ⭐\n"
-                f"📊 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
+                f"⭐ +{amount} ⭐!\n💰 Баланс: {user[4]:.1f} ⭐\n📊 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
                 reply_markup=main_kb())
         else:
-            bot.send_message(msg.chat.id, "❌ Не удалось показать рекламу. Попробуйте позже.", reply_markup=main_kb())
+            bot.send_message(msg.chat.id, "❌ Ошибка рекламы")
     except Exception as e:
-        logging.error(f"Ошибка в earn: {e}")
-        bot.send_message(msg.chat.id, "❌ Произошла ошибка. Попробуйте позже.", reply_markup=main_kb())
+        logging.error(f"Earn error: {e}")
+        bot.send_message(msg.chat.id, "❌ Ошибка")
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
-@subscription_required
 def profile(msg):
     uid = msg.from_user.id
     user = get_user(uid)
     if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
+        bot.send_message(msg.chat.id, "Напишите /start")
         return
-    
     rank = get_user_rank(uid)
     total = get_total_users()
     bot.send_message(msg.chat.id,
-        f"👤 ПРОФИЛЬ\n\n"
-        f"🆔 ID: {user[1]}\n👤 Имя: {user[2]}\n📛 @{user[3] or '—'}\n\n"
-        f"💰 Баланс: {user[4]:.1f} ⭐\n📈 Заработано: {user[5]:.1f} ⭐\n💸 Выведено: {user[6]:.1f} ⭐\n"
-        f"🔄 Кликов: {user[7]}\n📊 Средний: {user[8]:.2f} ⭐\n"
-        f"👥 Друзей: {user[15]}\n💰 С рефералов: {user[16]:.1f} ⭐\n"
-        f"🏆 Место: #{rank} из {total}\n"
+        f"👤 ПРОФИЛЬ\n\n💰 Баланс: {user[4]:.1f} ⭐\n📈 Заработано: {user[5]:.1f} ⭐\n"
+        f"💸 Выведено: {user[6]:.1f} ⭐\n🔄 Кликов: {user[7]}\n"
+        f"👥 Друзей: {user[15]}\n🏆 Место: #{rank} из {total}\n"
         f"🎯 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
         reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👥 Друзья")
-@subscription_required
 def friends(msg):
     uid = msg.from_user.id
     user = get_user(uid)
     if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
+        bot.send_message(msg.chat.id, "Напишите /start")
         return
-    
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''SELECT u.username, u.created_at FROM users u
-                 JOIN referrals r ON r.referred_id = u.id
-                 WHERE r.referrer_id = ? ORDER BY r.created_at DESC LIMIT 5''', (user[0],))
-    refs = c.fetchall()
-    conn.close()
-    ref_list = "\n".join([f"{i+1}. @{r[0] or '—'} — {r[1][:10]}" for i, r in enumerate(refs)]) or "Пока никого 😢"
     bot.send_message(msg.chat.id,
-        f"👥 РЕФЕРАЛКА\n\n"
-        f"💰 За друга: +{REFERRAL_BONUS} ⭐\n"
-        f"📊 Пассив: {REFERRAL_PERCENT}% от кликов друга\n\n"
-        f"📋 Ссылка:\nhttps://t.me/{(bot.get_me()).username}?start={user[13]}\n\n"
-        f"👥 Приглашено: {user[15]}\n💰 С рефералов: {user[16]:.1f} ⭐\n\n"
-        f"📋 Последние:\n{ref_list}",
+        f"👥 РЕФЕРАЛКА\n\n💰 За друга: +{REFERRAL_BONUS} ⭐\n"
+        f"📊 Пассив: {REFERRAL_PERCENT}%\n\n"
+        f"🔗 Ссылка:\nhttps://t.me/{(bot.get_me()).username}?start={user[13]}\n\n"
+        f"👥 Друзей: {user[15]}\n💰 Заработано: {user[16]:.1f} ⭐",
         reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "🏆 Топ")
-@subscription_required
 def top(msg):
-    uid = msg.from_user.id
     users = get_top_users(10)
+    uid = msg.from_user.id
     rank = get_user_rank(uid)
-    total = get_total_users()
-    if not users:
-        bot.send_message(msg.chat.id, "Пока нет игроков 😢", reply_markup=main_kb())
-        return
     text = "🏆 ТОП-10\n\n"
     medals = ["🥇", "🥈", "🥉"]
     for i, (uname, bal) in enumerate(users):
         m = medals[i] if i < 3 else f"{i+1}."
         text += f"{m} {uname} — {bal:.1f} ⭐\n"
-    text += f"\n📊 Твоё место: #{rank} из {total}"
+    text += f"\n📊 Ваше место: #{rank}"
     bot.send_message(msg.chat.id, text, reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "🎁 Бонус")
-@subscription_required
 def bonus(msg):
     uid = msg.from_user.id
     amount, err = get_daily_bonus(uid)
@@ -523,24 +440,123 @@ def bonus(msg):
         return
     user = get_user(uid)
     bot.send_message(msg.chat.id,
-        f"🎁 +{amount} ⭐\n\n💰 Баланс: {user[4]:.1f} ⭐\n\nВозвращайся завтра! 🚀",
+        f"🎁 +{amount} ⭐!\n💰 Баланс: {user[4]:.1f} ⭐",
         reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "💸 Вывод")
-@subscription_required
 def withdraw_menu(msg):
     bot.send_message(msg.chat.id,
-        f"💸 ВЫВОД\n\nМинимум: {WITHDRAW_MIN} ⭐\n\nКоманда: /withdraw X\nПример: /withdraw 10",
+        f"💸 ВЫВОД\n\nМинимум: {WITHDRAW_MIN} ⭐\n\n/withdraw СУММА",
         reply_markup=main_kb())
 
 @bot.message_handler(commands=['withdraw'])
-@subscription_required
 def withdraw(msg):
     uid = msg.from_user.id
     user = get_user(uid)
     if not user:
-        bot.send_message(msg.chat.id, "❌ Введите /start")
+        bot.send_message(msg.chat.id, "Напишите /start")
         return
-    if user[18]:
-        bot.send_message(msg.chat.id, "❌ Вы забанены!")
-    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "Укажите сумму: /withdraw 10")
+        return
+    try:
+        amount = float(args[1])
+    except:
+        bot.send_message(msg.chat.id, "Введите число")
+        return
+    if amount < WITHDRAW_MIN:
+        bot.send_message(msg.chat.id, f"Минимум: {WITHDRAW_MIN} ⭐")
+        return
+    if amount > user[4]:
+        bot.send_message(msg.chat.id, "Недостаточно средств")
+        return
+    new_balance = user[4] - amount
+    new_withdrawn = user[6] + amount
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET balance = ?, total_withdrawn = ? WHERE telegram_id = ?",
+              (new_balance, new_withdrawn, uid))
+    now = datetime.datetime.now().isoformat()
+    c.execute("INSERT INTO withdrawals (user_id, amount, requested_at) VALUES (?, ?, ?)",
+              (user[0], amount, now))
+    conn.commit()
+    conn.close()
+    bot.send_message(msg.chat.id,
+        f"✅ Заявка на {amount} ⭐ отправлена!",
+        reply_markup=main_kb())
+
+@bot.message_handler(commands=['admin'])
+def admin(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    bot.send_message(msg.chat.id, "🛡️ АДМИН-ПАНЕЛЬ", reply_markup=admin_kb())
+
+@bot.message_handler(commands=['addfake'])
+def add_fake(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    args = msg.text.split()
+    if len(args) < 3:
+        bot.send_message(msg.chat.id, "/addfake @username 1000")
+        return
+    username = args[1]
+    try:
+        balance = float(args[2])
+    except:
+        bot.send_message(msg.chat.id, "Баланс - число")
+        return
+    fake_users = init_fake_top()
+    fake_users.append({"username": username, "balance": balance})
+    fake_users.sort(key=lambda x: x['balance'], reverse=True)
+    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(fake_users, f, ensure_ascii=False, indent=2)
+    bot.send_message(msg.chat.id, f"✅ Добавлен {username}")
+
+@bot.message_handler(commands=['fake_list'])
+def fake_list(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    fake_users = init_fake_top()
+    text = "📋 ФЕЙК-ТОП\n\n"
+    for i, u in enumerate(fake_users[:20]):
+        text += f"{i+1}. {u['username']} — {u['balance']} ⭐\n"
+    bot.send_message(msg.chat.id, text)
+
+@bot.message_handler(commands=['removefake'])
+def remove_fake(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "/removefake @username")
+        return
+    username = args[1]
+    fake_users = init_fake_top()
+    new_list = [u for u in fake_users if u['username'] != username]
+    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(new_list, f, ensure_ascii=False, indent=2)
+    bot.send_message(msg.chat.id, f"✅ Удалён {username}")
+
+@bot.message_handler(func=lambda m: m.text == "◀️ В главное меню")
+def back(msg):
+    bot.send_message(msg.chat.id, "✅ Возврат", reply_markup=main_kb())
+
+@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
+def stats(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    total = get_total_users()
+    active = get_active_users()
+    clicks = get_total_clicks()
+    bot.send_message(msg.chat.id,
+        f"📊 СТАТИСТИКА\n\n👥 Всего: {total}\n🟢 Активных: {active}\n🔄 Кликов: {clicks}",
+        reply_markup=admin_kb())
+
+# Запуск
+if __name__ == "__main__":
+    init_db()
+    init_fake_top()
+    print("Бот запущен!")
+    bot.remove_webhook()
+    bot.polling(none_stop=True)
