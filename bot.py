@@ -9,6 +9,7 @@ import os
 from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from ads import show_advert
 
 load_dotenv()
 
@@ -35,7 +36,7 @@ REQUIRED_CHANNELS = [
     },
     {
         'id': '-1003788328996',
-        'name': 'Канал 2',
+        'name': 'SPOOKY MOD',
         'url': 'https://t.me/+GMHDq5Fij2M5MmFh'
     },
     {
@@ -51,12 +52,7 @@ def init_fake_top():
         {"username": "@mittsf2", "balance": 1704},
         {"username": "@demon666_597", "balance": 680},
         {"username": "@FGPIDORS", "balance": 676},
-        {"username": "@thisgoodworld", "balance": 312},
-        {"username": "⭐ СТАЛЬНОЙ ВОИН", "balance": 287.5},
-        {"username": "🔥 ОГНЕННЫЙ ЛИС", "balance": 254.3},
-        {"username": "💎 АЛМАЗНЫЙ БАРОН", "balance": 221.8},
-        {"username": "👑 ТЁМНЫЙ ВЛАСТЕЛИН", "balance": 198.2},
-        {"username": "🌙 ЛУННЫЙ СТРАЖ", "balance": 167.9}
+        {"username": "@thisgoodworld", "balance": 312}
     ]
     try:
         with open(FAKE_TOP_FILE, 'r', encoding='utf-8') as f:
@@ -428,18 +424,29 @@ def earn(msg):
         bot.send_message(msg.chat.id, "❌ Вы забанены!", reply_markup=main_kb())
         return
     
-    # Временно без рекламы (пока на модерации)
-    amount, err = earn_stars(uid)
-    if err:
-        bot.send_message(msg.chat.id, err, reply_markup=main_kb())
-        return
-    user = get_user(uid)
-    bot.send_message(msg.chat.id,
-        f"⭐ +{amount} ⭐!\n\n"
-        f"💰 Баланс: {user[4]:.1f} ⭐\n"
-        f"📈 Всего: {user[5]:.1f} ⭐\n"
-        f"📊 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
-        reply_markup=main_kb())
+    bot.send_message(msg.chat.id, "📺 Показываем рекламу... Пожалуйста, подождите!")
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        success = loop.run_until_complete(show_advert(uid, GRAMADS_API_KEY))
+        loop.close()
+        if success:
+            amount, err = earn_stars(uid)
+            if err:
+                bot.send_message(msg.chat.id, err, reply_markup=main_kb())
+                return
+            user = get_user(uid)
+            bot.send_message(msg.chat.id,
+                f"⭐ +{amount} ⭐ за просмотр рекламы!\n\n"
+                f"💰 Баланс: {user[4]:.1f} ⭐\n"
+                f"📈 Всего: {user[5]:.1f} ⭐\n"
+                f"📊 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
+                reply_markup=main_kb())
+        else:
+            bot.send_message(msg.chat.id, "❌ Не удалось показать рекламу. Попробуйте позже.", reply_markup=main_kb())
+    except Exception as e:
+        logging.error(f"Ошибка в earn: {e}")
+        bot.send_message(msg.chat.id, "❌ Произошла ошибка. Попробуйте позже.", reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 @subscription_required
@@ -536,24 +543,4 @@ def withdraw(msg):
         return
     if user[18]:
         bot.send_message(msg.chat.id, "❌ Вы забанены!")
-        return
-    args = msg.text.split()
-    if len(args) < 2:
-        bot.send_message(msg.chat.id, "❌ Укажите сумму: /withdraw 10")
-        return
-    try:
-        amount = float(args[1])
-    except:
-        bot.send_message(msg.chat.id, "❌ Введите число")
-        return
-    if amount < WITHDRAW_MIN:
-        bot.send_message(msg.chat.id, f"❌ Минимум: {WITHDRAW_MIN} ⭐")
-        return
-    if amount > user[4]:
-        bot.send_message(msg.chat.id, f"❌ Недостаточно! У вас: {user[4]:.1f} ⭐")
-        return
-    new_balance = user[4] - amount
-    new_withdrawn = user[6] + amount
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET balance = ?, total_withdrawn = ? 
+    
