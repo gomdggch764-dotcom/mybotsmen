@@ -292,8 +292,8 @@ def check_subscriptions(user_id):
                 not_subscribed.append(channel)
         except Exception as e:
             logging.error(f"Ошибка проверки подписки на {channel['id']}: {e}")
-            # Если ошибка - считаем что не подписан
-            not_subscribed.append(channel)
+            # Если бот не может проверить - пропускаем
+            pass
     return not_subscribed
 
 def create_subscription_keyboard():
@@ -326,11 +326,10 @@ def start(msg):
     ref = msg.text.split()[1] if len(msg.text.split()) > 1 else None
     user = register_user(uid, name, uname, ref)
     
-    # ПРОВЕРЯЕМ ПОДПИСКУ ДЛЯ ВСЕХ (и старых и новых)
+    # ПРОВЕРЯЕМ ПОДПИСКУ ДЛЯ ВСЕХ
     not_subscribed = check_subscriptions(uid)
     
     if not_subscribed:
-        # Пользователь не подписан на все каналы
         channels_list = "\n".join([f"• {ch['name']} - {ch['url']}" for ch in not_subscribed])
         bot.send_message(
             msg.chat.id,
@@ -341,7 +340,6 @@ def start(msg):
         )
         return
     
-    # Пользователь подписан на все каналы
     bonus_msg = ""
     today = datetime.date.today().isoformat()
     if user[17] != today:
@@ -363,7 +361,6 @@ def check_sub_callback(call):
     not_subscribed = check_subscriptions(uid)
     
     if not_subscribed:
-        # Всё ещё не подписан
         channels_list = "\n".join([f"• {ch['name']}" for ch in not_subscribed])
         bot.answer_callback_query(call.id, "❌ Вы не подписаны на все каналы!", show_alert=True)
         try:
@@ -377,14 +374,12 @@ def check_sub_callback(call):
         except:
             pass
     else:
-        # Подписан на все каналы
         bot.answer_callback_query(call.id, "✅ Подписка подтверждена!", show_alert=True)
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
         
-        # Показываем главное меню
         user = get_user(uid)
         if not user:
             user = register_user(uid, call.from_user.first_name, call.from_user.username or "без username")
@@ -406,7 +401,7 @@ def check_sub_callback(call):
             reply_markup=main_kb()
         )
 
-# Декоратор для проверки подписки перед любым действием
+# Декоратор для проверки подписки
 def subscription_required(func):
     def wrapper(message):
         uid = message.from_user.id
@@ -424,7 +419,6 @@ def subscription_required(func):
         return func(message)
     return wrapper
 
-# Применяем проверку ко всем действиям
 @bot.message_handler(func=lambda m: m.text == "💰 Заработать")
 @subscription_required
 def earn(msg):
@@ -543,4 +537,15 @@ def bonus(msg):
 @subscription_required
 def withdraw_menu(msg):
     bot.send_message(msg.chat.id,
-        f"💸 ВЫВОД\n\nМинимум: {WITHDRAW_MIN} ⭐\n\nКоманда: /withdraw X\nПример: 
+        f"💸 ВЫВОД\n\nМинимум: {WITHDRAW_MIN} ⭐\n\nКоманда: /withdraw X\nПример: /withdraw 10",
+        reply_markup=main_kb())
+
+@bot.message_handler(commands=['withdraw'])
+@subscription_required
+def withdraw(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "❌ Введите /start")
+        return
+    if user[18]
