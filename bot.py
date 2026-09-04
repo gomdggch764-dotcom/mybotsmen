@@ -571,8 +571,8 @@ def user_info(msg):
         return
     args = msg.text.split()
     if len(args) < 2:
-        @bot.message_handler(commands=['user'])
-def user_info(msg):
+        @bot.message_handler(commands=['user']
+    def user_info(msg):
     if msg.from_user.id not in ADMIN_IDS:
         return
     args = msg.text.split()
