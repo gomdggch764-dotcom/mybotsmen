@@ -6,25 +6,68 @@ import json
 import asyncio
 import logging
 import os
+import requests
 from dotenv import load_dotenv
 from telebot import TeleBot
-from telebot.types import ReplyKeyboardMarkup
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 
 load_dotenv()
 
 TOKEN = os.getenv('BOT_TOKEN', '8611978353:AAFHdShz1qFngDWCeWPuGas_ANJvD-KFSJs')
+CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN', '')
 ADMIN_IDS = [6621617827]
 
 MIN_EARN = 2.0
 MAX_EARN = 4.0
+VIP_MIN_EARN = 2.5
+VIP_MAX_EARN = 5.0
 DAILY_CLICK_LIMIT = 50
+VIP_DAILY_CLICK_LIMIT = 100
 WITHDRAW_MIN = 120
 REFERRAL_BONUS = 5
 REFERRAL_PERCENT = 10
+VIP_PRICE = 25  # Цена VIP в Telegram Stars
 DB_NAME = "earn_bot.db"
 FAKE_TOP_FILE = "fake_top.json"
 
+STAR_PACKAGES = [
+    {"id": "stars_50", "stars": 50, "bonus": 5, "price_usd": 1.0},
+    {"id": "stars_100", "stars": 100, "bonus": 15, "price_usd": 2.0},
+    {"id": "stars_250", "stars": 250, "bonus": 50, "price_usd": 5.0},
+    {"id": "stars_500", "stars": 500, "bonus": 125, "price_usd": 10.0},
+    {"id": "stars_1000", "stars": 1000, "bonus": 300, "price_usd": 20.0},
+]
+
 logging.basicConfig(level=logging.INFO)
+
+CRYPTO_API_URL = "https://pay.crypt.bot/api"
+
+def create_crypto_invoice(amount_usd, description, payload):
+    if not CRYPTO_BOT_TOKEN:
+        return None
+    try:
+        url = f"{CRYPTO_API_URL}/createInvoice"
+        headers = {
+            "Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "asset": "USDT",
+            "amount": str(amount_usd),
+            "description": description,
+            "payload": payload,
+            "allow_comments": False,
+            "allow_anonymous": False
+        }
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("ok"):
+                return result["result"]
+        return None
+    except Exception as e:
+        logging.error(f"CryptoBot error: {e}")
+        return None
 
 def init_fake_top():
     default_fake = [
@@ -73,6 +116,8 @@ def init_db():
         referral_earned REAL DEFAULT 0,
         daily_bonus_date TEXT,
         is_banned INTEGER DEFAULT 0,
+        is_vip INTEGER DEFAULT 0,
+        vip_expires TEXT,
         created_at TEXT
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
@@ -87,6 +132,26 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         referrer_id INTEGER,
         referred_id INTEGER,
+        created_at TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER,
+        invoice_id TEXT,
+        package_id TEXT,
+        stars INTEGER,
+        bonus INTEGER,
+        total_added REAL,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS vip_purchases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER,
+        invoice_id TEXT,
+        stars_paid INTEGER,
+        duration_days INTEGER,
+        status TEXT DEFAULT 'pending',
         created_at TEXT
     )''')
     conn.commit()
@@ -141,6 +206,16 @@ def register_user(tg_id, first_name, username, ref_code=None):
     conn.close()
     return get_user(tg_id)
 
+def is_vip_active(user):
+    """Проверяет активен ли VIP"""
+    if not user or not user[19]:  # is_vip = 0
+        return False
+    if user[20]:  # vip_expires
+        expires = datetime.datetime.fromisoformat(user[20])
+        if expires < datetime.datetime.now():
+            return False
+    return True
+
 def get_top_users(limit=10):
     fake_users = init_fake_top()
     conn = get_db()
@@ -194,10 +269,17 @@ def earn_stars(tg_id):
         return None, "❌ Пользователь не найден"
     if user[18]:
         return None, "❌ Вы забанены!"
+    
+    vip = is_vip_active(user)
+    daily_limit = VIP_DAILY_CLICK_LIMIT if vip else DAILY_CLICK_LIMIT
+    min_earn = VIP_MIN_EARN if vip else MIN_EARN
+    max_earn = VIP_MAX_EARN if vip else MAX_EARN
+    
     today = datetime.date.today().isoformat()
-    if user[11] == today and user[10] >= DAILY_CLICK_LIMIT:
-        return None, f"⚠️ Лимит {DAILY_CLICK_LIMIT} кликов на сегодня!"
-    amount = round(random.uniform(MIN_EARN, MAX_EARN), 1)
+    if user[11] == today and user[10] >= daily_limit:
+        return None, f"⚠️ Лимит {daily_limit} кликов на сегодня!"
+    
+    amount = round(random.uniform(min_earn, max_earn), 1)
     new_balance = user[4] + amount
     new_total = user[5] + amount
     new_clicks = user[7] + 1
@@ -227,7 +309,8 @@ def get_daily_bonus(tg_id):
     today = datetime.date.today().isoformat()
     if user[17] == today:
         return None, "⚠️ Бонус уже получен сегодня!"
-    amount = random.randint(5, 15)
+    vip = is_vip_active(user)
+    amount = random.randint(10, 20) if vip else random.randint(5, 15)
     update_user(tg_id, balance=user[4]+amount, total_earned=user[5]+amount,
                 daily_bonus_date=today, last_visit=datetime.datetime.now().isoformat())
     return amount, None
@@ -237,6 +320,7 @@ def main_kb():
     kb.row("💰 Заработать", "👤 Профиль")
     kb.row("👥 Друзья", "💸 Вывод")
     kb.row("🏆 Топ", "🎁 Бонус")
+    kb.row("💎 Пополнить", "👑 VIP")
     return kb
 
 def admin_kb():
@@ -255,17 +339,20 @@ def start(msg):
     uname = msg.from_user.username or "без username"
     ref = msg.text.split()[1] if len(msg.text.split()) > 1 else None
     user = register_user(uid, name, uname, ref)
+    vip = is_vip_active(user)
+    vip_badge = " 👑" if vip else ""
     bonus_msg = ""
     today = datetime.date.today().isoformat()
     if user[17] != today:
-        ba = random.randint(5, 15)
+        ba = random.randint(10, 20) if vip else random.randint(5, 15)
         update_user(uid, balance=user[4]+ba, total_earned=user[5]+ba, daily_bonus_date=today)
         bonus_msg = f"\n\n🎁 Ежедневный бонус: +{ba} ⭐!"
     ref_msg = "\n\n👥 Вы пришли по реферальной ссылке!" if user[14] else ""
     bot.send_message(msg.chat.id,
         f"⭐ Добро пожаловать в EarnSaveliyBot, {name}!\n\n"
         f"💰 Баланс: {user[4]:.1f} ⭐\n"
-        f"📈 Заработано: {user[5]:.1f} ⭐{bonus_msg}{ref_msg}\n\n"
+        f"📈 Заработано: {user[5]:.1f} ⭐{bonus_msg}{ref_msg}\n"
+        f"👑 Статус: {'VIP' if vip else 'Обычный'}{vip_badge}\n\n"
         f"Нажимай «💰 Заработать» чтобы получить от {MIN_EARN} до {MAX_EARN} ⭐!\n"
         f"Зови друзей и получай {REFERRAL_PERCENT}% от их дохода! 🚀",
         reply_markup=main_kb())
@@ -281,6 +368,9 @@ def earn(msg):
         bot.send_message(msg.chat.id, "❌ Вы забанены!", reply_markup=main_kb())
         return
     
+    vip = is_vip_active(user)
+    daily_limit = VIP_DAILY_CLICK_LIMIT if vip else DAILY_CLICK_LIMIT
+    
     amount, err = earn_stars(uid)
     if err:
         bot.send_message(msg.chat.id, err, reply_markup=main_kb())
@@ -291,7 +381,7 @@ def earn(msg):
         f"⭐ +{amount} ⭐!\n\n"
         f"💰 Баланс: {user[4]:.1f} ⭐\n"
         f"📈 Всего: {user[5]:.1f} ⭐\n"
-        f"📊 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
+        f"📊 Сегодня: {user[10]}/{daily_limit}",
         reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
@@ -301,16 +391,23 @@ def profile(msg):
     if not user:
         bot.send_message(msg.chat.id, "❌ Введите /start")
         return
+    vip = is_vip_active(user)
     rank = get_user_rank(uid)
     total = get_total_users()
+    vip_text = "👑 VIP" if vip else "Обычный"
+    vip_expires = ""
+    if vip and user[20]:
+        vip_expires = f"\n👑 VIP до: {user[20][:10]}"
+    daily_limit = VIP_DAILY_CLICK_LIMIT if vip else DAILY_CLICK_LIMIT
     bot.send_message(msg.chat.id,
         f"👤 ПРОФИЛЬ\n\n"
-        f"🆔 ID: {user[1]}\n👤 Имя: {user[2]}\n📛 @{user[3] or '—'}\n\n"
+        f"🆔 ID: {user[1]}\n👤 Имя: {user[2]}\n📛 @{user[3] or '—'}\n"
+        f"👑 Статус: {vip_text}{vip_expires}\n\n"
         f"💰 Баланс: {user[4]:.1f} ⭐\n📈 Заработано: {user[5]:.1f} ⭐\n💸 Выведено: {user[6]:.1f} ⭐\n"
         f"🔄 Кликов: {user[7]}\n📊 Средний: {user[8]:.2f} ⭐\n"
         f"👥 Друзей: {user[15]}\n💰 С рефералов: {user[16]:.1f} ⭐\n"
         f"🏆 Место: #{rank} из {total}\n"
-        f"🎯 Сегодня: {user[10]}/{DAILY_CLICK_LIMIT}",
+        f"🎯 Сегодня: {user[10]}/{daily_limit}",
         reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👥 Друзья")
@@ -412,6 +509,318 @@ def withdraw(msg):
         f"✅ Заявка на {amount} ⭐ отправлена!\n💰 Остаток: {new_balance:.1f} ⭐",
         reply_markup=main_kb())
 
+# ============ ПОПОЛНЕНИЕ БАЛАНСА ============
+
+@bot.message_handler(func=lambda m: m.text == "💎 Пополнить")
+def top_up_menu(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "❌ Введите /start")
+        return
+    
+    if not CRYPTO_BOT_TOKEN:
+        bot.send_message(msg.chat.id, "❌ Оплата временно недоступна")
+        return
+    
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    for pkg in STAR_PACKAGES:
+        total = pkg["stars"] + pkg["bonus"]
+        keyboard.add(InlineKeyboardButton(
+            text=f"⭐ {pkg['stars']} + {pkg['bonus']} бонус = {total} ⭐ (${pkg['price_usd']})",
+            callback_data=f"buy_{pkg['id']}"
+        ))
+    
+    bot.send_message(msg.chat.id,
+        "💎 ПОПОЛНЕНИЕ БАЛАНСА\n\n"
+        "Выберите пакет:\n\n"
+        "Оплата через CryptoBot (USDT/TON)",
+        reply_markup=keyboard)
+
+# ============ VIP ============
+
+@bot.message_handler(func=lambda m: m.text == "👑 VIP")
+def vip_menu(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "❌ Введите /start")
+        return
+    
+    vip = is_vip_active(user)
+    
+    if vip:
+        vip_expires = ""
+        if user[20]:
+            vip_expires = f"\n📅 Действует до: {user[20][:10]}"
+        bot.send_message(msg.chat.id,
+            f"👑 ВЫ УЖЕ VIP!\n\n"
+            f"⚡ Кликов в день: {VIP_DAILY_CLICK_LIMIT}\n"
+            f"💰 Заработок: {VIP_MIN_EARN} - {VIP_MAX_EARN} ⭐\n"
+            f"🎁 Бонус: 10-20 ⭐\n"
+            f"{vip_expires}",
+            reply_markup=main_kb())
+        return
+    
+    if not CRYPTO_BOT_TOKEN:
+        bot.send_message(msg.chat.id, "❌ Оплата временно недоступна")
+        return
+    
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(InlineKeyboardButton(
+        text=f"👑 Купить VIP на 30 дней - {VIP_PRICE} ⭐ (${VIP_PRICE/50:.2f})",
+        callback_data="buy_vip_30"
+    ))
+    keyboard.add(InlineKeyboardButton(
+        text=f"👑 Купить VIP навсегда - {VIP_PRICE * 3} ⭐ (${VIP_PRICE*3/50:.2f})",
+        callback_data="buy_vip_forever"
+    ))
+    
+    bot.send_message(msg.chat.id,
+        f"👑 VIP СТАТУС\n\n"
+        f"⚡ Кликов в день: {VIP_DAILY_CLICK_LIMIT} (вместо {DAILY_CLICK_LIMIT})\n"
+        f"💰 Заработок: {VIP_MIN_EARN} - {VIP_MAX_EARN} ⭐ (вместо {MIN_EARN} - {MAX_EARN})\n"
+        f"🎁 Бонус: 10-20 ⭐ (вместо 5-15)\n"
+        f"👑 Значок VIP в профиле\n\n"
+        f"Выберите срок:",
+        reply_markup=keyboard)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_vip_"))
+def process_vip_purchase(call):
+    uid = call.from_user.id
+    vip_type = call.data.replace("buy_vip_", "")
+    
+    if vip_type == "30":
+        stars_paid = VIP_PRICE
+        duration_days = 30
+        price_usd = VIP_PRICE / 50  # Примерно
+        description = f"VIP на 30 дней - {stars_paid} Stars"
+    elif vip_type == "forever":
+        stars_paid = VIP_PRICE * 3
+        duration_days = 3650  # ~10 лет
+        price_usd = stars_paid / 50
+        description = f"VIP навсегда - {stars_paid} Stars"
+    else:
+        bot.answer_callback_query(call.id, "❌ Неизвестный тип")
+        return
+    
+    invoice = create_crypto_invoice(
+        amount_usd=price_usd,
+        description=description,
+        payload=f"vip_{uid}_{vip_type}"
+    )
+    
+    if not invoice:
+        bot.answer_callback_query(call.id, "❌ Ошибка создания платежа")
+        return
+    
+    invoice_id = invoice.get("invoice_id")
+    pay_url = invoice.get("pay_url") or invoice.get("bot_invoice_url")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO vip_purchases (telegram_id, invoice_id, stars_paid, duration_days, created_at) VALUES (?,?,?,?,?)",
+              (uid, invoice_id, stars_paid, duration_days, datetime.datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton(text="💳 Оплатить", url=pay_url))
+    keyboard.add(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_vip_{invoice_id}"))
+    
+    bot.send_message(call.message.chat.id,
+        f"👑 ПОКУПКА VIP\n\n"
+        f"📅 Срок: {'30 дней' if vip_type == '30' else 'Навсегда'}\n"
+        f"💰 К оплате: ${price_usd:.2f}\n\n"
+        f"Нажмите «Оплатить» и после оплаты нажмите «Я оплатил»",
+        reply_markup=keyboard)
+    
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_vip_"))
+def check_vip_payment(call):
+    uid = call.from_user.id
+    invoice_id = call.data.replace("check_vip_", "")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM vip_purchases WHERE invoice_id = ? AND telegram_id = ?", (invoice_id, uid))
+    purchase = c.fetchone()
+    
+    if not purchase:
+        bot.answer_callback_query(call.id, "❌ Покупка не найдена")
+        conn.close()
+        return
+    
+    if purchase[5] == 'completed':
+        bot.answer_callback_query(call.id, "✅ VIP уже активирован!")
+        conn.close()
+        return
+    
+    try:
+        url = f"{CRYPTO_API_URL}/getInvoices"
+        headers = {
+            "Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN,
+            "Content-Type": "application/json"
+        }
+        data = {"invoice_ids": invoice_id}
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("ok") and result["result"].get("items"):
+                invoice = result["result"]["items"][0]
+                if invoice.get("status") == "paid":
+                    duration_days = purchase[4]
+                    expires = None
+                    if duration_days < 3650:
+                        expires = (datetime.datetime.now() + datetime.timedelta(days=duration_days)).isoformat()
+                    
+                    update_user(uid, is_vip=1, vip_expires=expires)
+                    
+                    c.execute("UPDATE vip_purchases SET status = 'completed' WHERE invoice_id = ?", (invoice_id,))
+                    conn.commit()
+                    conn.close()
+                    
+                    bot.send_message(call.message.chat.id,
+                        f"✅ VIP АКТИВИРОВАН!\n\n"
+                        f"👑 Статус: VIP\n"
+                        f"⚡ Кликов в день: {VIP_DAILY_CLICK_LIMIT}\n"
+                        f"💰 Заработок: {VIP_MIN_EARN} - {VIP_MAX_EARN} ⭐\n"
+                        f"🎁 Бонус: 10-20 ⭐\n\n"
+                        f"Приятного использования! 🚀",
+                        reply_markup=main_kb())
+                    bot.answer_callback_query(call.id, "✅ VIP активирован!")
+                    return
+                else:
+                    conn.close()
+                    bot.answer_callback_query(call.id, "❌ Платёж не найден")
+                    return
+            
+        conn.close()
+        bot.answer_callback_query(call.id, "❌ Ошибка проверки")
+    except Exception as e:
+        conn.close()
+        bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
+def process_purchase(call):
+    uid = call.from_user.id
+    package_id = call.data.replace("buy_", "")
+    
+    package = None
+    for pkg in STAR_PACKAGES:
+        if pkg["id"] == package_id:
+            package = pkg
+            break
+    
+    if not package:
+        bot.answer_callback_query(call.id, "❌ Пакет не найден")
+        return
+    
+    total_stars = package["stars"] + package["bonus"]
+    
+    invoice = create_crypto_invoice(
+        amount_usd=package["price_usd"],
+        description=f"Покупка {package['stars']}⭐ + {package['bonus']}⭐ бонус для EarnSaveliyBot",
+        payload=f"{uid}_{package_id}"
+    )
+    
+    if not invoice:
+        bot.answer_callback_query(call.id, "❌ Ошибка создания платежа")
+        return
+    
+    invoice_id = invoice.get("invoice_id")
+    pay_url = invoice.get("pay_url") or invoice.get("bot_invoice_url")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO payments (telegram_id, invoice_id, package_id, stars, bonus, total_added, created_at) VALUES (?,?,?,?,?,?,?)",
+              (uid, invoice_id, package_id, package["stars"], package["bonus"], total_stars, datetime.datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton(text="💳 Оплатить", url=pay_url))
+    keyboard.add(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_pay_{invoice_id}"))
+    
+    bot.send_message(call.message.chat.id,
+        f"💎 ПОКУПКА: {package['stars']} ⭐ + {package['bonus']} бонус\n\n"
+        f"💰 К оплате: ${package['price_usd']}\n"
+        f"🎁 Вы получите: {total_stars} ⭐\n\n"
+        f"Нажмите «Оплатить» и после оплаты нажмите «Я оплатил»",
+        reply_markup=keyboard)
+    
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_pay_"))
+def check_payment(call):
+    uid = call.from_user.id
+    invoice_id = call.data.replace("check_pay_", "")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM payments WHERE invoice_id = ? AND telegram_id = ?", (invoice_id, uid))
+    payment = c.fetchone()
+    
+    if not payment:
+        bot.answer_callback_query(call.id, "❌ Платёж не найден")
+        conn.close()
+        return
+    
+    if payment[7] == 'completed':
+        bot.answer_callback_query(call.id, "✅ Уже начислено!")
+        conn.close()
+        return
+    
+    try:
+        url = f"{CRYPTO_API_URL}/getInvoices"
+        headers = {
+            "Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN,
+            "Content-Type": "application/json"
+        }
+        data = {"invoice_ids": invoice_id}
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("ok") and result["result"].get("items"):
+                invoice = result["result"]["items"][0]
+                if invoice.get("status") == "paid":
+                    total_added = payment[6]
+                    user = get_user(uid)
+                    if user:
+                        new_balance = user[4] + total_added
+                        update_user(uid, balance=new_balance)
+                        
+                        c.execute("UPDATE payments SET status = 'completed' WHERE invoice_id = ?", (invoice_id,))
+                        conn.commit()
+                        conn.close()
+                        
+                        bot.send_message(call.message.chat.id,
+                            f"✅ ОПЛАТА УСПЕШНА!\n\n"
+                            f"💰 Начислено: {total_added} ⭐\n"
+                            f"💰 Новый баланс: {new_balance:.1f} ⭐",
+                            reply_markup=main_kb())
+                        bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
+                        return
+                    else:
+                        conn.close()
+                        bot.answer_callback_query(call.id, "❌ Пользователь не найден")
+                        return
+                else:
+                    conn.close()
+                    bot.answer_callback_query(call.id, "❌ Платёж не найден. Попробуйте позже")
+                    return
+            
+        conn.close()
+        bot.answer_callback_query(call.id, "❌ Ошибка проверки")
+    except Exception as e:
+        conn.close()
+        bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)}")
+
+# ============ АДМИН ============
+
 @bot.message_handler(commands=['admin'])
 def admin(msg):
     if msg.from_user.id not in ADMIN_IDS:
@@ -489,6 +898,10 @@ def stats(msg):
     earned = c.fetchone()[0] or 0
     c.execute("SELECT COUNT(*) FROM referrals")
     refs = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM payments WHERE status='completed'")
+    payments = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM vip_purchases WHERE status='completed'")
+    vip_count = c.fetchone()[0] or 0
     c.execute("SELECT username, balance FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 1")
     top = c.fetchone()
     conn.close()
@@ -497,7 +910,10 @@ def stats(msg):
         f"📊 СТАТИСТИКА\n\n"
         f"👥 Всего: {total}\n"
         f"💰 Заработано: {earned:.1f} ⭐\n"
-        f"👥 Рефералов: {refs}\n🏆 Топ-1: {top_text}",
+        f"👥 Рефералов: {refs}\n"
+        f"💳 Платежей: {payments}\n"
+        f"👑 VIP покупок: {vip_count}\n"
+        f"🏆 Топ-1: {top_text}",
         reply_markup=admin_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👥 Все пользователи")
@@ -506,7 +922,7 @@ def all_users(msg):
         return
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT username, balance, created_at FROM users WHERE is_banned=0 ORDER BY created_at DESC LIMIT 20")
+    c.execute("SELECT username, balance, is_vip, created_at FROM users WHERE is_banned=0 ORDER BY created_at DESC LIMIT 20")
     users = c.fetchall()
     conn.close()
     if not users:
@@ -514,7 +930,8 @@ def all_users(msg):
         return
     text = "👥 ПОСЛЕДНИЕ 20\n\n"
     for u in users:
-        text += f"@{u[0] or '—'} — {u[1]:.1f} ⭐ ({u[2][:10]})\n"
+        vip_badge = " 👑" if u[2] else ""
+        text += f"@{u[0] or '—'} — {u[1]:.1f} ⭐{vip_badge} ({u[3][:10]})\n"
     bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
 
 @bot.message_handler(func=lambda m: m.text == "🔝 ТОП-20")
@@ -523,14 +940,15 @@ def top20(msg):
         return
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT username, balance, clicks FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 20")
+    c.execute("SELECT username, balance, clicks, is_vip FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 20")
     users = c.fetchall()
     conn.close()
     text = "🔝 ТОП-20\n\n"
     medals = ["🥇","🥈","🥉"]
-    for i, (uname, bal, clicks) in enumerate(users):
+    for i, (uname, bal, clicks, is_vip) in enumerate(users):
         m = medals[i] if i < 3 else f"{i+1}."
-        text += f"{m} @{uname or '—'} — {bal:.1f} ⭐ ({clicks} кликов)\n"
+        vip_badge = " 👑" if is_vip else ""
+        text += f"{m} @{uname or '—'} — {bal:.1f} ⭐{vip_badge} ({clicks} кликов)\n"
     bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
 
 @bot.message_handler(func=lambda m: m.text == "✉️ Рассылка")
