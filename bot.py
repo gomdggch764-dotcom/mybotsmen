@@ -15,7 +15,7 @@ load_dotenv()
 
 TOKEN = os.getenv('BOT_TOKEN', '8611978353:AAFHdShz1qFngDWCeWPuGas_ANJvD-KFSJs')
 CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN', '')
-ADMIN_IDS = [6621617827]
+ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]
 
 MIN_EARN = 2.0
 MAX_EARN = 4.0
