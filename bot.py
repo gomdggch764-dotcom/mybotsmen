@@ -292,7 +292,6 @@ def check_subscriptions(user_id):
                 not_subscribed.append(channel)
         except Exception as e:
             logging.error(f"Ошибка проверки подписки на {channel['id']}: {e}")
-            # Если бот не может проверить - пропускаем
             pass
     return not_subscribed
 
@@ -326,7 +325,6 @@ def start(msg):
     ref = msg.text.split()[1] if len(msg.text.split()) > 1 else None
     user = register_user(uid, name, uname, ref)
     
-    # ПРОВЕРЯЕМ ПОДПИСКУ ДЛЯ ВСЕХ
     not_subscribed = check_subscriptions(uid)
     
     if not_subscribed:
@@ -401,16 +399,13 @@ def check_sub_callback(call):
             reply_markup=main_kb()
         )
 
-# Декоратор для проверки подписки
 def subscription_required(func):
     def wrapper(message):
         uid = message.from_user.id
         
-        # Пропускаем админов
         if uid in ADMIN_IDS:
             return func(message)
         
-        # Проверяем подписку
         not_subscribed = check_subscriptions(uid)
         if not_subscribed:
             send_subscription_required(message)
@@ -548,4 +543,135 @@ def withdraw(msg):
     if not user:
         bot.send_message(msg.chat.id, "❌ Введите /start")
         return
-    if user[18]
+    if user[18]:
+        bot.send_message(msg.chat.id, "❌ Вы забанены!")
+        return
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "❌ Укажите сумму: /withdraw 10")
+        return
+    try:
+        amount = float(args[1])
+    except:
+        bot.send_message(msg.chat.id, "❌ Введите число")
+        return
+    if amount < WITHDRAW_MIN:
+        bot.send_message(msg.chat.id, f"❌ Минимум: {WITHDRAW_MIN} ⭐")
+        return
+    if amount > user[4]:
+        bot.send_message(msg.chat.id, f"❌ Недостаточно! У вас: {user[4]:.1f} ⭐")
+        return
+    new_balance = user[4] - amount
+    new_withdrawn = user[6] + amount
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET balance = ?, total_withdrawn = ? WHERE telegram_id = ?",
+              (new_balance, new_withdrawn, uid))
+    now = datetime.datetime.now().isoformat()
+    c.execute("INSERT INTO withdrawals (user_id, amount, requested_at) VALUES (?,?,?)",
+              (user[0], amount, now))
+    conn.commit()
+    conn.close()
+    bot.send_message(msg.chat.id,
+        f"✅ Заявка на {amount} ⭐ отправлена!\n💰 Остаток: {new_balance:.1f} ⭐",
+        reply_markup=main_kb())
+
+@bot.message_handler(commands=['admin'])
+def admin(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.send_message(msg.chat.id, "❌ Нет доступа")
+        return
+    bot.send_message(msg.chat.id, "🛡️ АДМИН-ПАНЕЛЬ", reply_markup=admin_kb())
+
+@bot.message_handler(commands=['addfake'])
+def add_fake(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.send_message(msg.chat.id, "❌ Нет доступа")
+        return
+    args = msg.text.split()
+    if len(args) < 3:
+        bot.send_message(msg.chat.id, "❌ Используй: /addfake @username 1000")
+        return
+    username = args[1]
+    try:
+        balance = float(args[2])
+    except:
+        bot.send_message(msg.chat.id, "❌ Баланс должен быть числом")
+        return
+    fake_users = init_fake_top()
+    fake_users.append({"username": username, "balance": balance})
+    fake_users.sort(key=lambda x: x['balance'], reverse=True)
+    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(fake_users, f, ensure_ascii=False, indent=2)
+    bot.send_message(msg.chat.id, f"✅ Добавлен {username} с балансом {balance} ⭐")
+
+@bot.message_handler(commands=['fake_list'])
+def fake_list(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.send_message(msg.chat.id, "❌ Нет доступа")
+        return
+    fake_users = init_fake_top()
+    if not fake_users:
+        bot.send_message(msg.chat.id, "📭 Фейк-топ пуст")
+        return
+    text = "📋 ФЕЙК-ТОП (JSON)\n\n"
+    for i, u in enumerate(fake_users[:20]):
+        text += f"{i+1}. {u['username']} — {u['balance']} ⭐\n"
+    bot.send_message(msg.chat.id, text)
+
+@bot.message_handler(commands=['removefake'])
+def remove_fake(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.send_message(msg.chat.id, "❌ Нет доступа")
+        return
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "❌ Используй: /removefake @username")
+        return
+    username = args[1]
+    fake_users = init_fake_top()
+    new_list = [u for u in fake_users if u['username'] != username]
+    if len(new_list) == len(fake_users):
+        bot.send_message(msg.chat.id, f"❌ {username} не найден в фейк-топе")
+        return
+    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(new_list, f, ensure_ascii=False, indent=2)
+    bot.send_message(msg.chat.id, f"✅ Удалён {username} из фейк-топа")
+
+@bot.message_handler(func=lambda m: m.text == "◀️ В главное меню")
+def back(msg):
+    bot.send_message(msg.chat.id, "✅ Возврат", reply_markup=main_kb())
+
+@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
+def stats(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    total = get_total_users()
+    active = get_active_users()
+    clicks = get_total_clicks()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT SUM(total_earned) FROM users WHERE is_banned=0")
+    earned = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM referrals")
+    refs = c.fetchone()[0] or 0
+    c.execute("SELECT username, balance FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 1")
+    top = c.fetchone()
+    conn.close()
+    top_text = f"@{top[0] or '—'} ({top[1]:.1f} ⭐)" if top else "—"
+    bot.send_message(msg.chat.id,
+        f"📊 СТАТИСТИКА\n\n"
+        f"👥 Всего: {total}\n"
+        f"🟢 Активных: {active}\n"
+        f"🔄 Кликов: {clicks}\n"
+        f"⭐ Заработано: {earned:.1f}\n"
+        f"👥 Рефералов: {refs}\n"
+        f"🏆 Лидер: {top_text}",
+        reply_markup=admin_kb())
+
+# Запуск бота
+if __name__ == "__main__":
+    init_db()
+    init_fake_top()
+    print("Бот запущен!")
+    bot.polling(none_stop=True)
