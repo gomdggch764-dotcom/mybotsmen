@@ -2,7 +2,7 @@
 import sqlite3
 import random
 import datetime
-import jsonв
+import json
 import asyncio
 import logging
 import os
