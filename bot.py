@@ -797,7 +797,7 @@ def vip_info_callback(call):
         f"   {VIP_DAILY_CLICK_LIMIT} запросов в день\n"
         f"   вместо {DAILY_CLICK_LIMIT}\n\n"
         "3️⃣ 🎁 Увеличенный бонус\n"
-        "   Ежедневный бонус до 10⭐ (вместо 3⭐)\n\n"
+        "   Ежедневный бонус до 25⭐ (вместо 15⭐)\n\n"
         "4️⃣ 👨‍💼 Приоритетная поддержка\n"
         "   Быстрые ответы от администрации\n\n"
         "5️⃣ 🚀 Эксклюзивный доступ\n"
@@ -817,3 +817,4 @@ def friends(msg):
     user = get_user(uid)
     if not user:
         bot.send_message
+    
