@@ -17,20 +17,18 @@ TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_IDS = [6621617827]
 
 # ========== WALLET PAY (@send) ==========
-# Твой токен для Wallet Pay
 WALLET_TOKEN = "630423:AAuDdKYE80k9w5OqlPosVitpIyeGL8XXxg7"
 WALLET_API_URL = "https://pay.wallet.tg/api"
 
-MIN_EARN = 2.3
-MAX_EARN = 3.5
+MIN_EARN = 0.6
+MAX_EARN = 1.0
 DAILY_CLICK_LIMIT = 50
-VIP_DAILY_CLICK_LIMIT = 120
+VIP_DAILY_CLICK_LIMIT = 50
 WITHDRAW_MIN = 120
 WITHDRAW_WAIT_DAYS = 7
-VIP_PRICE = 50
 VIP_PRICE_USDT = 1.0
 REFERRAL_BONUS = 3
-REFERRAL_PERCENT = 10
+REFERRAL_PERCENT = 3
 DB_NAME = "earn_bot.db"
 FAKE_TOP_FILE = "fake_top.json"
 
@@ -46,7 +44,6 @@ CHANNELS = [
 
 # ========== WALLET PAY API ==========
 def create_wallet_invoice(amount, currency='USDT', description='VIP покупка'):
-    """Создание счета через Wallet Pay (@send)"""
     try:
         url = f"{WALLET_API_URL}/createInvoice"
         headers = {
@@ -73,7 +70,6 @@ def create_wallet_invoice(amount, currency='USDT', description='VIP покупк
         return None
 
 def get_wallet_invoice_status(invoice_id):
-    """Проверка статуса счета в Wallet Pay"""
     try:
         url = f"{WALLET_API_URL}/getInvoice"
         headers = {
@@ -407,28 +403,7 @@ def get_daily_bonus(tg_id):
                 daily_bonus_date=today, last_visit=datetime.datetime.now().isoformat())
     return amount, None
 
-def buy_vip_stars(tg_id):
-    """Покупка VIP за звезды"""
-    user = get_user(tg_id)
-    if not user:
-        return False, "Пользователь не найден"
-    
-    if len(user) < 22:
-        return False, "❌ Ошибка: обновите базу данных"
-    
-    if is_vip_active(user):
-        return False, "❌ VIP уже активен!"
-    
-    if user[4] < VIP_PRICE:
-        return False, f"❌ Недостаточно звезд! Нужно: {VIP_PRICE} ⭐, у вас: {user[4]:.1f} ⭐"
-    
-    new_balance = user[4] - VIP_PRICE
-    expires = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
-    update_user(tg_id, balance=new_balance, is_vip=1, vip_expires=expires)
-    return True, "✅ VIP активирован на 30 дней!"
-
 def buy_vip_wallet(tg_id, invoice_id):
-    """Активация VIP после оплаты через Wallet Pay"""
     user = get_user(tg_id)
     if not user:
         return False, "Пользователь не найден"
@@ -617,9 +592,7 @@ def profile(msg):
     if not is_vip_active(user):
         bot.send_message(msg.chat.id,
             f"🌟 ХОТИТЕ БОЛЬШЕ ВОЗМОЖНОСТЕЙ?\n\n"
-            f"Купите VIP:\n"
-            f"• За {VIP_PRICE} ⭐\n"
-            f"• Или за {VIP_PRICE_USDT} USDT через @send\n\n"
+            f"Купите VIP всего за {VIP_PRICE_USDT} USDT через @send\n\n"
             f"✅ Моментальная выплата звезд от Fragment (вместо 3-7 дней)\n"
             f"✅ {VIP_DAILY_CLICK_LIMIT} запросов в день (вместо {DAILY_CLICK_LIMIT})\n"
             f"✅ Отдельная поддержка с быстрым ответом\n"
@@ -648,44 +621,18 @@ def vip_menu(msg):
             f"💰 Баланс: {user[4]:.1f} ⭐",
             reply_markup=main_kb())
     else:
-        keyboard = InlineKeyboardMarkup(row_width=2)
-        keyboard.add(
-            InlineKeyboardButton(f"👑 Купить за {VIP_PRICE} ⭐", callback_data="buy_vip_stars"),
-            InlineKeyboardButton(f"💳 Купить за {VIP_PRICE_USDT} USDT", callback_data="buy_vip_wallet")
-        )
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton(f"💳 Купить VIP за {VIP_PRICE_USDT} USDT", callback_data="buy_vip_wallet"))
         keyboard.add(InlineKeyboardButton("❓ Что дает VIP?", callback_data="vip_info"))
         
         bot.send_message(msg.chat.id,
             f"👑 VIP СТАТУС\n\n"
+            f"💰 Цена: {VIP_PRICE_USDT} USDT\n"
+            f"⏳ Длительность: 30 дней\n"
+            f"💳 Оплата через @send (Wallet Pay)\n\n"
             f"💰 Ваш баланс: {user[4]:.1f} ⭐\n\n"
-            f"Выберите способ оплаты:",
+            f"Нажмите кнопку для оплаты:",
             reply_markup=keyboard)
-
-@bot.callback_query_handler(func=lambda call: call.data == "buy_vip_stars")
-def buy_vip_stars_callback(call):
-    uid = call.from_user.id
-    success, msg_text = buy_vip_stars(uid)
-    
-    if success:
-        bot.answer_callback_query(call.id, "✅ VIP активирован!", show_alert=True)
-        user = get_user(uid)
-        try:
-            bot.edit_message_text(
-                f"✅ VIP АКТИВИРОВАН!\n\n"
-                f"💰 Новый баланс: {user[4]:.1f} ⭐\n"
-                f"👑 Действует 30 дней\n\n"
-                f"Теперь доступно:\n"
-                f"✅ Моментальные выплаты\n"
-                f"✅ {VIP_DAILY_CLICK_LIMIT} кликов в день\n"
-                f"✅ Приоритетная поддержка",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=main_kb()
-            )
-        except:
-            bot.send_message(call.message.chat.id, msg_text, reply_markup=main_kb())
-    else:
-        bot.answer_callback_query(call.id, msg_text, show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_vip_wallet")
 def buy_vip_wallet_callback(call):
@@ -714,17 +661,17 @@ def buy_vip_wallet_callback(call):
     conn.close()
     
     keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("💳 ОПЛАТИТЬ ЧЕРЕЗ @send", url=invoice['pay_url']))
+    keyboard.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=invoice['pay_url']))
     keyboard.add(InlineKeyboardButton("🔄 Проверить оплату", callback_data=f"check_wallet_{invoice['id']}"))
     keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_wallet"))
     
     bot.answer_callback_query(call.id, "💳 Счет создан!", show_alert=True)
     try:
         bot.edit_message_text(
-            f"💳 ОПЛАТА VIP ЧЕРЕЗ @send\n\n"
-            f"Сумма: {VIP_PRICE_USDT} USDT\n"
-            f"Длительность: 30 дней\n\n"
-            f"Нажмите «ОПЛАТИТЬ ЧЕРЕЗ @send»\n"
+            f"💳 ОПЛАТА VIP\n\n"
+            f"💰 Сумма: {VIP_PRICE_USDT} USDT\n"
+            f"⏳ Длительность: 30 дней\n\n"
+            f"Нажмите «ОПЛАТИТЬ»\n"
             f"После оплаты нажмите «Проверить оплату»\n\n"
             f"⏳ Счет действителен 1 час",
             call.message.chat.id,
@@ -766,7 +713,7 @@ def check_wallet_payment(call):
             try:
                 bot.edit_message_text(
                     f"✅ VIP АКТИВИРОВАН!\n\n"
-                    f"💳 Оплачено: {VIP_PRICE_USDT} USDT через @send\n"
+                    f"💳 Оплачено: {VIP_PRICE_USDT} USDT\n"
                     f"👑 Действует 30 дней\n\n"
                     f"Теперь доступно:\n"
                     f"✅ Моментальные выплаты\n"
@@ -823,7 +770,7 @@ def vip_info_callback(call):
         "   Быстрые ответы от администрации\n\n"
         "5️⃣ 🚀 Эксклюзивный доступ\n"
         "   К новым функциям первыми\n\n"
-        f"💰 Цена: {VIP_PRICE} ⭐ или {VIP_PRICE_USDT} USDT на 30 дней"
+        f"💰 Цена: {VIP_PRICE_USDT} USDT на 30 дней"
     )
     bot.answer_callback_query(call.id)
     bot.send_message(call.message.chat.id, vip_info_text, reply_markup=main_kb())
@@ -892,7 +839,7 @@ def withdraw_menu(msg):
     )
     
     if not vip_status:
-        text += f"\n\n💡 Купите VIP за {VIP_PRICE} ⭐ или {VIP_PRICE_USDT} USDT и получайте выплаты моментально!"
+        text += f"\n\n💡 Купите VIP за {VIP_PRICE_USDT} USDT и получайте выплаты моментально!"
     
     bot.send_message(msg.chat.id, text, reply_markup=main_kb())
 
@@ -942,7 +889,7 @@ def withdraw(msg):
     response = f"✅ Заявка на {amount} ⭐ отправлена!\n📅 {wait_text}"
     
     if not vip_status:
-        response += f"\n\n💡 С VIP вы бы получили выплату моментально вместо {WITHDRAW_WAIT_DAYS} дней ожидания!\nКупите VIP за {VIP_PRICE} ⭐ или {VIP_PRICE_USDT} USDT"
+        response += f"\n\n💡 С VIP вы бы получили выплату моментально вместо {WITHDRAW_WAIT_DAYS} дней ожидания!\nКупите VIP за {VIP_PRICE_USDT} USDT через @send"
     
     bot.send_message(msg.chat.id, response, reply_markup=main_kb())
 
@@ -1236,10 +1183,10 @@ if __name__ == "__main__":
     init_fake_top()
     
     print("🤖 Бот запущен!")
-    print(f"👑 VIP цена: {VIP_PRICE} ⭐ или {VIP_PRICE_USDT} USDT")
+    print(f"👑 VIP цена: {VIP_PRICE_USDT} USDT")
     print(f"📊 Обычный лимит: {DAILY_CLICK_LIMIT}")
     print(f"📊 VIP лимит: {VIP_DAILY_CLICK_LIMIT}")
-    print("💳 Wallet Pay (@send): ✅ Настроен")
+    print("💳 Оплата: через @send (Wallet Pay)")
     print("📢 Реклама: ❌ ОТКЛЮЧЕНА")
     print("✅ Бот готов к работе!")
     
