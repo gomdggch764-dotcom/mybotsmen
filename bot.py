@@ -453,79 +453,7 @@ def log_game(user_id, game_type, bet, win, result):
     conn.commit()
     conn.close()
 
-# ========== ИГРЫ ==========
-
-def play_football(bet):
-    """Футбол - бросок мяча"""
-    # Возможные исходы
-    outcomes = [
-        {"name": "ГООООЛ! 🎯⚽", "multiplier": FOOTBALL_MULTIPLIER, "emoji": "⚽", "win": True},
-        {"name": "Штанга! 😱", "multiplier": 0.3, "emoji": "🥅", "win": True},
-        {"name": "Мимо ворот! ❌", "multiplier": 0, "emoji": "😢", "win": False},
-        {"name": "Вратарь поймал! 🧤", "multiplier": 0, "emoji": "🧤", "win": False},
-        {"name": "Аут! 🏃", "multiplier": 0, "emoji": "🏃", "win": False},
-        {"name": "Пенальти! 🎯", "multiplier": 2.0, "emoji": "🔥", "win": True}
-    ]
-    
-    result = random.choice(outcomes)
-    win = bet * result["multiplier"] if result["win"] else 0
-    
-    return result, win
-
-def play_basketball(bet):
-    """Баскетбол - бросок мяча"""
-    outcomes = [
-        {"name": "ТОЧНОЕ ПОПАДАНИЕ! 🏀🎯", "multiplier": FOOTBALL_MULTIPLIER, "emoji": "🏀", "win": True},
-        {"name": "Кольцо! 😱", "multiplier": 0.3, "emoji": "🔄", "win": True},
-        {"name": "Мимо! ❌", "multiplier": 0, "emoji": "😢", "win": False},
-        {"name": "Блокшот! 🚫", "multiplier": 0, "emoji": "🚫", "win": False},
-        {"name": "Трехочковый! 🎯", "multiplier": 2.5, "emoji": "🔥", "win": True}
-    ]
-    
-    result = random.choice(outcomes)
-    win = bet * result["multiplier"] if result["win"] else 0
-    
-    return result, win
-
-def play_bowling(bet):
-    """Кегли - бросок шара"""
-    outcomes = [
-        {"name": "СТРАЙК! 🎳🔥", "multiplier": BOWLING_MULTIPLIER, "emoji": "🎳", "win": True, "pins": 10},
-        {"name": "Спэр! 👍", "multiplier": 1.2, "emoji": "👍", "win": True, "pins": 9},
-        {"name": "Сбито 8 кеглей! 😊", "multiplier": 0.8, "emoji": "😊", "win": True, "pins": 8},
-        {"name": "Сбито 6 кеглей! 😐", "multiplier": 0.5, "emoji": "😐", "win": True, "pins": 6},
-        {"name": "Мимо! ❌", "multiplier": 0, "emoji": "😢", "win": False, "pins": 0}
-    ]
-    
-    result = random.choice(outcomes)
-    win = bet * result["multiplier"] if result["win"] else 0
-    
-    return result, win
-
-def play_slots(bet):
-    """Слоты - вращение барабанов"""
-    symbols = ['🍒', '🍋', '🍊', '🍇', '7️⃣', '🔔', '💎']
-    results = [random.choice(symbols) for _ in range(3)]
-    
-    # Проверяем комбинации
-    if results.count('7️⃣') == 3:
-        result = {"name": "ДЖЕКПОТ! 🎰💰🔥", "multiplier": SLOTS_MULTIPLIER, "emoji": "🎰", "win": True}
-    elif results.count('💎') == 3:
-        result = {"name": "ТРИ АЛМАЗА! 💎💎💎", "multiplier": 5, "emoji": "💎", "win": True}
-    elif results.count('🍇') == 3:
-        result = {"name": "ТРИ ВИНОГРАДА! 🍇🍇🍇", "multiplier": 3, "emoji": "🍇", "win": True}
-    elif results[0] == results[1] == results[2]:
-        result = {"name": f"ТРИ {results[0]}! 🎉", "multiplier": 2, "emoji": "🎉", "win": True}
-    elif results[0] == results[1] or results[1] == results[2] or results[0] == results[2]:
-        result = {"name": f"Пара {results[0]} 😊", "multiplier": 0.5, "emoji": "😊", "win": True}
-    else:
-        result = {"name": "Ничего не выпало 😢", "multiplier": 0, "emoji": "😢", "win": False}
-    
-    win = bet * result["multiplier"] if result["win"] else 0
-    
-    return result, win, results
-
-# ========== ОСНОВНАЯ КЛАВИАТУРА ==========
+# ========== КЛАВИАТУРЫ ==========
 
 def main_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -914,7 +842,12 @@ def games_menu(msg):
         "🎳 Кегли - бросок шара\n"
         "🎰 Слоты - вращение барабанов\n\n"
         f"💰 Минимальная ставка: {GAME_MIN_BET} ⭐\n"
-        f"💰 Максимальная ставка: {GAME_MAX_BET} ⭐",
+        f"💰 Максимальная ставка: {GAME_MAX_BET} ⭐\n\n"
+        "Команды:\n"
+        "/football [сумма]\n"
+        "/basketball [сумма]\n"
+        "/bowling [сумма]\n"
+        "/slots [сумма]",
         reply_markup=games_kb())
 
 @bot.message_handler(func=lambda m: m.text == "◀️ В главное меню")
@@ -922,23 +855,6 @@ def back_main(msg):
     bot.send_message(msg.chat.id, "✅ Возврат", reply_markup=main_kb())
 
 # ---------- ФУТБОЛ ----------
-@bot.message_handler(func=lambda m: m.text == "⚽ Футбол")
-def football_game(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "Напишите /start")
-        return
-    
-    bot.send_message(msg.chat.id,
-        f"⚽ ФУТБОЛ\n\n"
-        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
-        f"🎯 Удар по воротам!\n"
-        f"📊 Множитель за гол: {FOOTBALL_MULTIPLIER}x\n"
-        f"💵 Ставка: /football [сумма]\n\n"
-        f"Пример: /football 10",
-        reply_markup=games_kb())
-
 @bot.message_handler(commands=['football'])
 def football_play(msg):
     uid = msg.from_user.id
@@ -958,20 +874,29 @@ def football_play(msg):
         bot.send_message(msg.chat.id, "❌ Введите число")
         return
     
-    if bet < GAME_MIN_BET:
-        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
-        return
-    
-    if bet > GAME_MAX_BET:
-        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+    if bet < GAME_MIN_BET or bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Ставка от {GAME_MIN_BET} до {GAME_MAX_BET} ⭐")
         return
     
     if bet > user[4]:
         bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
         return
     
-    # Играем - бросаем мяч
-    result, win = play_football(bet)
+    outcomes = [
+        {"name": "ГООООЛ! ⚽️🔥", "emoji": "⚽️", "multiplier": FOOTBALL_MULTIPLIER, "win": True},
+        {"name": "Пенальти! 🎯⚽️", "emoji": "⚽️", "multiplier": 2.0, "win": True},
+        {"name": "Штанга! 😱🥅", "emoji": "⚽️", "multiplier": 0.3, "win": True},
+        {"name": "Мимо ворот! 😢❌", "emoji": "⚽️", "multiplier": 0, "win": False},
+        {"name": "Вратарь поймал! 🧤", "emoji": "⚽️", "multiplier": 0, "win": False},
+        {"name": "Аут! 🏃", "emoji": "⚽️", "multiplier": 0, "win": False}
+    ]
+    
+    result = random.choice(outcomes)
+    win = bet * result["multiplier"] if result["win"] else 0
+    
+    # Отправляем анимированный эмодзи мяча - Telegram сам покажет анимацию!
+    bot.send_message(msg.chat.id, "⚽️")
+    time.sleep(0.8)
     
     if win > 0:
         update_user(uid, balance=user[4] + win - bet)
@@ -982,41 +907,17 @@ def football_play(msg):
     
     log_game(uid, 'football', bet, win, result['name'])
     
-    # Анимация броска
-    animation = ["⚽", "⚽⚽", "⚽⚽⚽", "⚽⚽⚽⚽"]
-    for frame in animation:
-        bot.send_message(msg.chat.id, frame)
-        time.sleep(0.3)
-    
     result_text = (
-        f"⚽ РЕЗУЛЬТАТ МАТЧА\n\n"
+        f"⚽️ {result['name']}\n\n"
         f"💵 Ставка: {bet} ⭐\n"
-        f"🎯 {result['name']}\n"
         f"💰 Множитель: {result['multiplier']}x\n"
-        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n"
         f"💳 Новый баланс: {new_balance:.1f} ⭐"
     )
     
     bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
 
 # ---------- БАСКЕТБОЛ ----------
-@bot.message_handler(func=lambda m: m.text == "🏀 Баскетбол")
-def basketball_game(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "Напишите /start")
-        return
-    
-    bot.send_message(msg.chat.id,
-        f"🏀 БАСКЕТБОЛ\n\n"
-        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
-        f"🎯 Бросок в кольцо!\n"
-        f"📊 Множитель за попадание: {FOOTBALL_MULTIPLIER}x\n"
-        f"💵 Ставка: /basketball [сумма]\n\n"
-        f"Пример: /basketball 10",
-        reply_markup=games_kb())
-
 @bot.message_handler(commands=['basketball'])
 def basketball_play(msg):
     uid = msg.from_user.id
@@ -1036,20 +937,28 @@ def basketball_play(msg):
         bot.send_message(msg.chat.id, "❌ Введите число")
         return
     
-    if bet < GAME_MIN_BET:
-        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
-        return
-    
-    if bet > GAME_MAX_BET:
-        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+    if bet < GAME_MIN_BET or bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Ставка от {GAME_MIN_BET} до {GAME_MAX_BET} ⭐")
         return
     
     if bet > user[4]:
         bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
         return
     
-    # Играем - бросаем мяч
-    result, win = play_basketball(bet)
+    outcomes = [
+        {"name": "ПОПАДАНИЕ! 🏀🎯", "emoji": "🏀", "multiplier": FOOTBALL_MULTIPLIER, "win": True},
+        {"name": "Трехочковый! 🏀🔥", "emoji": "🏀", "multiplier": 2.5, "win": True},
+        {"name": "Кольцо! 😱🔄", "emoji": "🏀", "multiplier": 0.3, "win": True},
+        {"name": "Мимо! 😢❌", "emoji": "🏀", "multiplier": 0, "win": False},
+        {"name": "Блокшот! 🚫", "emoji": "🏀", "multiplier": 0, "win": False}
+    ]
+    
+    result = random.choice(outcomes)
+    win = bet * result["multiplier"] if result["win"] else 0
+    
+    # Отправляем анимированный эмодзи мяча
+    bot.send_message(msg.chat.id, "🏀")
+    time.sleep(0.8)
     
     if win > 0:
         update_user(uid, balance=user[4] + win - bet)
@@ -1060,41 +969,17 @@ def basketball_play(msg):
     
     log_game(uid, 'basketball', bet, win, result['name'])
     
-    # Анимация броска
-    animation = ["🏀", "🏀🏀", "🏀🏀🏀", "🏀🏀🏀🏀"]
-    for frame in animation:
-        bot.send_message(msg.chat.id, frame)
-        time.sleep(0.3)
-    
     result_text = (
-        f"🏀 РЕЗУЛЬТАТ МАТЧА\n\n"
+        f"🏀 {result['name']}\n\n"
         f"💵 Ставка: {bet} ⭐\n"
-        f"🎯 {result['name']}\n"
         f"💰 Множитель: {result['multiplier']}x\n"
-        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n"
         f"💳 Новый баланс: {new_balance:.1f} ⭐"
     )
     
     bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
 
 # ---------- КЕГЛИ ----------
-@bot.message_handler(func=lambda m: m.text == "🎳 Кегли")
-def bowling_game(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "Напишите /start")
-        return
-    
-    bot.send_message(msg.chat.id,
-        f"🎳 КЕГЛИ\n\n"
-        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
-        f"🎯 Бросок шара!\n"
-        f"📊 Множитель за страйк: {BOWLING_MULTIPLIER}x\n"
-        f"💵 Ставка: /bowling [сумма]\n\n"
-        f"Пример: /bowling 10",
-        reply_markup=games_kb())
-
 @bot.message_handler(commands=['bowling'])
 def bowling_play(msg):
     uid = msg.from_user.id
@@ -1114,20 +999,28 @@ def bowling_play(msg):
         bot.send_message(msg.chat.id, "❌ Введите число")
         return
     
-    if bet < GAME_MIN_BET:
-        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
-        return
-    
-    if bet > GAME_MAX_BET:
-        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+    if bet < GAME_MIN_BET or bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Ставка от {GAME_MIN_BET} до {GAME_MAX_BET} ⭐")
         return
     
     if bet > user[4]:
         bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
         return
     
-    # Играем - бросаем шар
-    result, win = play_bowling(bet)
+    outcomes = [
+        {"name": "СТРАЙК! 🎳🔥", "emoji": "🎳", "multiplier": BOWLING_MULTIPLIER, "win": True},
+        {"name": "Спэр! 🎳👍", "emoji": "🎳", "multiplier": 1.2, "win": True},
+        {"name": "Сбито 8 кеглей! 🎳😊", "emoji": "🎳", "multiplier": 0.8, "win": True},
+        {"name": "Сбито 6 кеглей! 🎳😐", "emoji": "🎳", "multiplier": 0.5, "win": True},
+        {"name": "Мимо! 🎳😢", "emoji": "🎳", "multiplier": 0, "win": False}
+    ]
+    
+    result = random.choice(outcomes)
+    win = bet * result["multiplier"] if result["win"] else 0
+    
+    # Отправляем анимированный эмодзи кеглей
+    bot.send_message(msg.chat.id, "🎳")
+    time.sleep(0.8)
     
     if win > 0:
         update_user(uid, balance=user[4] + win - bet)
@@ -1138,45 +1031,17 @@ def bowling_play(msg):
     
     log_game(uid, 'bowling', bet, win, result['name'])
     
-    # Анимация броска
-    animation = ["🎳", "🎳➡️", "🎳➡️➡️", "🎳➡️➡️➡️"]
-    for frame in animation:
-        bot.send_message(msg.chat.id, frame)
-        time.sleep(0.3)
-    
-    pins_info = f"🎯 Сбито: {result.get('pins', '?')}/10" if 'pins' in result else ""
-    
     result_text = (
-        f"🎳 РЕЗУЛЬТАТ БРОСКА\n\n"
+        f"🎳 {result['name']}\n\n"
         f"💵 Ставка: {bet} ⭐\n"
-        f"🎯 {result['name']}\n"
-        f"{pins_info}\n" if pins_info else ""
         f"💰 Множитель: {result['multiplier']}x\n"
-        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n"
         f"💳 Новый баланс: {new_balance:.1f} ⭐"
     )
     
     bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
 
 # ---------- СЛОТЫ ----------
-@bot.message_handler(func=lambda m: m.text == "🎰 Слоты")
-def slots_game(msg):
-    uid = msg.from_user.id
-    user = get_user(uid)
-    if not user:
-        bot.send_message(msg.chat.id, "Напишите /start")
-        return
-    
-    bot.send_message(msg.chat.id,
-        f"🎰 СЛОТЫ\n\n"
-        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
-        f"🎯 3 семерки - {SLOTS_MULTIPLIER}x\n"
-        f"💎 3 алмаза - 5x\n"
-        f"🍇 3 винограда - 3x\n"
-        f"💵 Ставка: /slots [сумма]\n\n"
-        f"Пример: /slots 10",
-        reply_markup=games_kb())
-
 @bot.message_handler(commands=['slots'])
 def slots_play(msg):
     uid = msg.from_user.id
@@ -1196,20 +1061,39 @@ def slots_play(msg):
         bot.send_message(msg.chat.id, "❌ Введите число")
         return
     
-    if bet < GAME_MIN_BET:
-        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
-        return
-    
-    if bet > GAME_MAX_BET:
-        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+    if bet < GAME_MIN_BET or bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Ставка от {GAME_MIN_BET} до {GAME_MAX_BET} ⭐")
         return
     
     if bet > user[4]:
         bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
         return
     
-    # Играем - крутим слоты
-    result, win, symbols = play_slots(bet)
+    symbols = ['🍒', '🍋', '🍊', '🍇', '7️⃣', '🔔', '💎']
+    results = [random.choice(symbols) for _ in range(3)]
+    
+    # Отправляем анимированный эмодзи слотов
+    bot.send_message(msg.chat.id, "🎰")
+    time.sleep(0.8)
+    
+    # Показываем комбинацию
+    bot.send_message(msg.chat.id, f"{results[0]} {results[1]} {results[2]}")
+    time.sleep(0.5)
+    
+    if results.count('7️⃣') == 3:
+        result = {"name": "ДЖЕКПОТ! 🎰💰🔥", "multiplier": SLOTS_MULTIPLIER, "win": True}
+    elif results.count('💎') == 3:
+        result = {"name": "ТРИ АЛМАЗА! 💎💎💎", "multiplier": 5, "win": True}
+    elif results.count('🍇') == 3:
+        result = {"name": "ТРИ ВИНОГРАДА! 🍇🍇🍇", "multiplier": 3, "win": True}
+    elif results[0] == results[1] == results[2]:
+        result = {"name": f"ТРИ {results[0]}! 🎉", "multiplier": 2, "win": True}
+    elif results[0] == results[1] or results[1] == results[2] or results[0] == results[2]:
+        result = {"name": f"Пара {results[0]} 😊", "multiplier": 0.5, "win": True}
+    else:
+        result = {"name": "Ничего не выпало 😢", "multiplier": 0, "win": False}
+    
+    win = bet * result["multiplier"] if result["win"] else 0
     
     if win > 0:
         update_user(uid, balance=user[4] + win - bet)
@@ -1220,26 +1104,15 @@ def slots_play(msg):
     
     log_game(uid, 'slots', bet, win, result['name'])
     
-    # Анимация вращения
-    animation = ["🎰", "🎰🌀", "🎰🌀🌀", "🎰🌀🌀🌀"]
-    for frame in animation:
-        bot.send_message(msg.chat.id, frame)
-        time.sleep(0.3)
-    
-    symbols_display = " | ".join(symbols)
     result_text = (
-        f"🎰 РЕЗУЛЬТАТ\n\n"
+        f"🎰 {result['name']}\n\n"
         f"💵 Ставка: {bet} ⭐\n"
-        f"🎰 {symbols_display}\n"
-        f"🎯 {result['name']}\n"
         f"💰 Множитель: {result['multiplier']}x\n"
-        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n"
         f"💳 Новый баланс: {new_balance:.1f} ⭐"
     )
     
     bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
-
-# ========== ОСТАЛЬНЫЕ ФУНКЦИИ ==========
 
 @bot.message_handler(func=lambda m: m.text == "👥 Друзья")
 def friends(msg):
@@ -1701,7 +1574,7 @@ def delete_game_stats(msg):
     
     bot.send_message(msg.chat.id, "✅ Игровая статистика очищена", reply_markup=admin_kb())
 
-# Запуск
+# ========== ЗАПУСК ==========
 if __name__ == "__main__":
     init_db()
     init_fake_top()
@@ -1711,5 +1584,6 @@ if __name__ == "__main__":
     print(f"📊 VIP лимит: {VIP_DAILY_CLICK_LIMIT}")
     print(f"💳 CryptoBot: {'✅' if CRYPTO_BOT_TOKEN != 'ВАШ_ТОКЕН_КРИПТО_БОТА' else '❌'}")
     print(f"🎮 Игры: ⚽ Футбол, 🏀 Баскетбол, 🎳 Кегли, 🎰 Слоты")
+    print("   (используются анимированные эмодзи Telegram)")
     bot.remove_webhook()
     bot.polling(none_stop=True)
