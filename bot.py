@@ -7,6 +7,8 @@ import logging
 import os
 import time
 import requests
+import hashlib
+import hmac
 from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,18 +17,20 @@ load_dotenv()
 
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_IDS = [6621617827]
-CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN')
 
-MIN_EARN = 0.60
-MAX_EARN = 1.0
+# ========== НАСТРОЙКИ WALLET PAY (@send) ==========
+WALLET_PAY_API_KEY = os.getenv('WALLET_PAY_API_KEY')  # API ключ от Wallet Pay
+WALLET_PAY_SECRET = os.getenv('WALLET_PAY_SECRET')    # Секретный ключ
 
+MIN_EARN = 2.3
+MAX_EARN = 3.5
 DAILY_CLICK_LIMIT = 50
 VIP_DAILY_CLICK_LIMIT = 120
-WITHDRAW_MIN = 50
+WITHDRAW_MIN = 120
 WITHDRAW_WAIT_DAYS = 7
 VIP_PRICE_USDT = 1.0
 REFERRAL_BONUS = 3
-REFERRAL_PERCENT = 3
+REFERRAL_PERCENT = 10
 DB_NAME = "earn_bot.db"
 FAKE_TOP_FILE = "fake_top.json"
 
@@ -40,28 +44,27 @@ CHANNELS = [
     {'id': '@EarnSaveliy', 'name': 'EarnSaveliy', 'url': 'https://t.me/EarnSaveliy'}
 ]
 
-# ========== CRYPTO BOT API ==========
-CRYPTO_API_URL = "https://pay.crypt.bot/api"
+# ========== WALLET PAY API (@send) ==========
+WALLET_API_URL = "https://pay.wallet.tg/api"
 
-def create_crypto_invoice(amount, currency='USDT', description='VIP покупка'):
-    """Создание счета в CryptoBot"""
-    if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == 'None':
-        logging.error("CRYPTO_BOT_TOKEN не настроен!")
+def create_wallet_invoice(amount, currency='USDT', description='VIP покупка'):
+    """Создание счета через Wallet Pay (@send)"""
+    if not WALLET_PAY_API_KEY or WALLET_PAY_API_KEY == 'None' or WALLET_PAY_API_KEY == '':
+        logging.error("WALLET_PAY_API_KEY не настроен!")
         return None
     
     try:
-        url = f"{CRYPTO_API_URL}/createInvoice"
+        url = f"{WALLET_API_URL}/createInvoice"
         headers = {
-            'Crypto-Pay-API-Token': CRYPTO_BOT_TOKEN,
+            'X-API-Key': WALLET_PAY_API_KEY,
             'Content-Type': 'application/json'
         }
         data = {
             'amount': amount,
-            'currency_type': 'fiat',
             'currency': currency,
             'description': description,
-            'payload': description,
-            'expires_in': 3600
+            'expires_in': 3600,
+            'callback_url': 'https://your-bot-url.com/callback'  # Замени на свой URL
         }
         
         response = requests.post(url, headers=headers, json=data, timeout=30)
@@ -70,21 +73,21 @@ def create_crypto_invoice(amount, currency='USDT', description='VIP покупк
         if result.get('ok'):
             return result['result']
         else:
-            logging.error(f"CryptoBot error: {result}")
+            logging.error(f"Wallet Pay error: {result}")
             return None
     except Exception as e:
         logging.error(f"Error creating invoice: {e}")
         return None
 
-def get_invoice_status(invoice_id):
-    """Проверка статуса счета"""
-    if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == 'None':
+def get_wallet_invoice_status(invoice_id):
+    """Проверка статуса счета в Wallet Pay"""
+    if not WALLET_PAY_API_KEY or WALLET_PAY_API_KEY == 'None' or WALLET_PAY_API_KEY == '':
         return None
     
     try:
-        url = f"{CRYPTO_API_URL}/getInvoices"
+        url = f"{WALLET_API_URL}/getInvoice"
         headers = {
-            'Crypto-Pay-API-Token': CRYPTO_BOT_TOKEN,
+            'X-API-Key': WALLET_PAY_API_KEY,
             'Content-Type': 'application/json'
         }
         params = {
@@ -94,13 +97,29 @@ def get_invoice_status(invoice_id):
         response = requests.get(url, headers=headers, params=params, timeout=30)
         result = response.json()
         
-        if result.get('ok') and result['result']['items']:
-            invoice = result['result']['items'][0]
-            return invoice.get('status')
+        if result.get('ok'):
+            return result['result'].get('status')
         return None
     except Exception as e:
         logging.error(f"Error checking invoice: {e}")
         return None
+
+# ========== ТЕСТ WALLET PAY ==========
+def test_wallet_pay():
+    """Тест подключения к Wallet Pay"""
+    api_key = os.getenv('WALLET_PAY_API_KEY')
+    
+    if not api_key or api_key == 'None' or api_key == '':
+        print("❌ WALLET_PAY_API_KEY не найден в переменных окружения!")
+        print("   Добавьте переменную WALLET_PAY_API_KEY в Railway")
+        return False
+    
+    print(f"🔍 API Key найден: {api_key[:10]}...{api_key[-5:]}")
+    print("✅ Wallet Pay настроен!")
+    return True
+
+# Тестируем при запуске
+WALLET_AVAILABLE = test_wallet_pay()
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 def init_fake_top():
@@ -164,10 +183,10 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     
-    c.execute('''CREATE TABLE IF NOT EXISTS crypto_payments (
+    c.execute('''CREATE TABLE IF NOT EXISTS wallet_payments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
-        invoice_id INTEGER UNIQUE,
+        invoice_id TEXT UNIQUE,
         amount REAL,
         currency TEXT,
         status TEXT DEFAULT 'pending',
@@ -415,7 +434,8 @@ def get_daily_bonus(tg_id):
                 daily_bonus_date=today, last_visit=datetime.datetime.now().isoformat())
     return amount, None
 
-def buy_vip_crypto(tg_id, invoice_id):
+def buy_vip_wallet(tg_id, invoice_id):
+    """Активация VIP после успешной оплаты через Wallet Pay"""
     user = get_user(tg_id)
     if not user:
         return False, "Пользователь не найден"
@@ -428,7 +448,7 @@ def buy_vip_crypto(tg_id, invoice_id):
     
     conn = get_db()
     c = conn.cursor()
-    c.execute("UPDATE crypto_payments SET status = 'completed', completed_at = ? WHERE invoice_id = ?",
+    c.execute("UPDATE wallet_payments SET status = 'completed', completed_at = ? WHERE invoice_id = ?",
               (datetime.datetime.now().isoformat(), invoice_id))
     conn.commit()
     conn.close()
@@ -453,7 +473,7 @@ def admin_kb():
     kb.row("◀️ В главное меню")
     return kb
 
-bot = TeleBot(TOKEN)
+bot = TeleBot(TOKEN, skip_pending=True)
 
 def is_subscribed(user_id, channel_id):
     try:
@@ -557,7 +577,6 @@ def earn(msg):
         bot.send_message(msg.chat.id, f"⚠️ Подпишитесь:\n\n{channels_text}", reply_markup=sub_keyboard())
         return
     
-    # Просто даем звезды без рекламы
     amount, err = earn_stars(uid)
     if err:
         bot.send_message(msg.chat.id, err)
@@ -605,7 +624,7 @@ def profile(msg):
     if not is_vip_active(user):
         bot.send_message(msg.chat.id,
             f"🌟 ХОТИТЕ БОЛЬШЕ ВОЗМОЖНОСТЕЙ?\n\n"
-            f"Купите VIP всего за {VIP_PRICE_USDT} USDT\n\n"
+            f"Купите VIP всего за {VIP_PRICE_USDT} USDT через @send\n\n"
             f"✅ Моментальная выплата звезд от Fragment (вместо 3-7 дней)\n"
             f"✅ {VIP_DAILY_CLICK_LIMIT} запросов в день (вместо {DAILY_CLICK_LIMIT})\n"
             f"✅ Отдельная поддержка с быстрым ответом\n"
@@ -621,8 +640,7 @@ def vip_menu(msg):
         bot.send_message(msg.chat.id, "Напишите /start")
         return
     
-    # Проверяем настроен ли CryptoBot
-    crypto_available = CRYPTO_BOT_TOKEN and CRYPTO_BOT_TOKEN != 'None' and CRYPTO_BOT_TOKEN != ''
+    wallet_available = WALLET_AVAILABLE
     
     if is_vip_active(user):
         expires = datetime.datetime.fromisoformat(user[21])
@@ -638,31 +656,32 @@ def vip_menu(msg):
             reply_markup=main_kb())
     else:
         keyboard = InlineKeyboardMarkup()
-        if crypto_available:
-            keyboard.add(InlineKeyboardButton(f"💳 Купить VIP за {VIP_PRICE_USDT} USDT", callback_data="buy_vip_crypto"))
+        if wallet_available:
+            keyboard.add(InlineKeyboardButton(f"💳 Купить VIP за {VIP_PRICE_USDT} USDT", callback_data="buy_vip_wallet"))
         else:
-            keyboard.add(InlineKeyboardButton("❌ CryptoBot не настроен", callback_data="crypto_not_available"))
+            keyboard.add(InlineKeyboardButton("❌ Wallet Pay не настроен", callback_data="wallet_not_available"))
         keyboard.add(InlineKeyboardButton("❓ Что дает VIP?", callback_data="vip_info"))
         
         status_text = ""
-        if not crypto_available:
-            status_text = "\n\n⚠️ CryptoBot временно недоступен. Обратитесь к администратору."
+        if not wallet_available:
+            status_text = "\n\n⚠️ Wallet Pay временно недоступен. Обратитесь к администратору."
         
         bot.send_message(msg.chat.id,
             f"👑 VIP СТАТУС\n\n"
             f"Цена: {VIP_PRICE_USDT} USDT\n"
-            f"Длительность: 30 дней\n\n"
+            f"Длительность: 30 дней\n"
+            f"Оплата через @send (Wallet Pay)\n\n"
             f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
             f"{status_text}\n"
             f"Нажмите кнопку для оплаты:",
             reply_markup=keyboard)
 
-@bot.callback_query_handler(func=lambda call: call.data == "crypto_not_available")
-def crypto_not_available_callback(call):
-    bot.answer_callback_query(call.id, "❌ CryptoBot не настроен! Обратитесь к администратору.", show_alert=True)
+@bot.callback_query_handler(func=lambda call: call.data == "wallet_not_available")
+def wallet_not_available_callback(call):
+    bot.answer_callback_query(call.id, "❌ Wallet Pay не настроен! Обратитесь к администратору.", show_alert=True)
 
-@bot.callback_query_handler(func=lambda call: call.data == "buy_vip_crypto")
-def buy_vip_crypto_callback(call):
+@bot.callback_query_handler(func=lambda call: call.data == "buy_vip_wallet")
+def buy_vip_wallet_callback(call):
     uid = call.from_user.id
     user = get_user(uid)
     
@@ -674,11 +693,11 @@ def buy_vip_crypto_callback(call):
         bot.answer_callback_query(call.id, "❌ VIP уже активен!", show_alert=True)
         return
     
-    if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == 'None' or CRYPTO_BOT_TOKEN == '':
-        bot.answer_callback_query(call.id, "❌ CryptoBot не настроен! Обратитесь к администратору.", show_alert=True)
+    if not WALLET_AVAILABLE:
+        bot.answer_callback_query(call.id, "❌ Wallet Pay не настроен! Обратитесь к администратору.", show_alert=True)
         return
     
-    invoice = create_crypto_invoice(VIP_PRICE_USDT, 'USDT', f'VIP покупка для {uid}')
+    invoice = create_wallet_invoice(VIP_PRICE_USDT, 'USDT', f'VIP покупка для {uid}')
     
     if not invoice:
         bot.answer_callback_query(call.id, "❌ Ошибка создания платежа. Попробуйте позже.", show_alert=True)
@@ -686,23 +705,23 @@ def buy_vip_crypto_callback(call):
     
     conn = get_db()
     c = conn.cursor()
-    c.execute("INSERT INTO crypto_payments (user_id, invoice_id, amount, currency, created_at) VALUES (?,?,?,?,?)",
-              (uid, invoice['invoice_id'], VIP_PRICE_USDT, 'USDT', datetime.datetime.now().isoformat()))
+    c.execute("INSERT INTO wallet_payments (user_id, invoice_id, amount, currency, created_at) VALUES (?,?,?,?,?)",
+              (uid, invoice['id'], VIP_PRICE_USDT, 'USDT', datetime.datetime.now().isoformat()))
     conn.commit()
     conn.close()
     
     keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=invoice['pay_url']))
-    keyboard.add(InlineKeyboardButton("🔄 Проверить оплату", callback_data=f"check_crypto_payment_{invoice['invoice_id']}"))
-    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_crypto_payment"))
+    keyboard.add(InlineKeyboardButton("💳 ОПЛАТИТЬ ЧЕРЕЗ @send", url=invoice['pay_url']))
+    keyboard.add(InlineKeyboardButton("🔄 Проверить оплату", callback_data=f"check_wallet_payment_{invoice['id']}"))
+    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_wallet_payment"))
     
     bot.answer_callback_query(call.id, "💳 Счет создан!", show_alert=True)
     try:
         bot.edit_message_text(
-            f"💳 ОПЛАТА VIP\n\n"
+            f"💳 ОПЛАТА VIP ЧЕРЕЗ @send\n\n"
             f"Сумма: {VIP_PRICE_USDT} USDT\n"
             f"Длительность: 30 дней\n\n"
-            f"Нажмите «ОПЛАТИТЬ» для перехода к оплате\n"
+            f"Нажмите «ОПЛАТИТЬ ЧЕРЕЗ @send» для перехода к оплате\n"
             f"После оплаты нажмите «Проверить оплату»\n\n"
             f"⏳ Счет действителен 1 час",
             call.message.chat.id,
@@ -711,17 +730,17 @@ def buy_vip_crypto_callback(call):
         )
     except:
         bot.send_message(call.message.chat.id,
-            f"💳 ОПЛАТА VIP\n\nСумма: {VIP_PRICE_USDT} USDT\n\nНажмите кнопку для оплаты:",
+            f"💳 ОПЛАТА VIP ЧЕРЕЗ @send\n\nСумма: {VIP_PRICE_USDT} USDT\n\nНажмите кнопку для оплаты:",
             reply_markup=keyboard)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("check_crypto_payment_"))
-def check_crypto_payment(call):
-    invoice_id = int(call.data.split("_")[3])
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_wallet_payment_"))
+def check_wallet_payment(call):
+    invoice_id = call.data.split("_")[3]
     uid = call.from_user.id
     
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT status FROM crypto_payments WHERE invoice_id = ? AND user_id = ?", (invoice_id, uid))
+    c.execute("SELECT status FROM wallet_payments WHERE invoice_id = ? AND user_id = ?", (invoice_id, uid))
     result = c.fetchone()
     conn.close()
     
@@ -733,10 +752,10 @@ def check_crypto_payment(call):
         bot.answer_callback_query(call.id, "✅ VIP уже активирован!", show_alert=True)
         return
     
-    status = get_invoice_status(invoice_id)
+    status = get_wallet_invoice_status(invoice_id)
     
     if status == 'paid' or status == 'confirmed':
-        success, msg_text = buy_vip_crypto(uid, invoice_id)
+        success, msg_text = buy_vip_wallet(uid, invoice_id)
         
         if success:
             bot.answer_callback_query(call.id, "✅ VIP АКТИВИРОВАН!", show_alert=True)
@@ -744,7 +763,7 @@ def check_crypto_payment(call):
             try:
                 bot.edit_message_text(
                     f"✅ VIP АКТИВИРОВАН!\n\n"
-                    f"💳 Оплачено: {VIP_PRICE_USDT} USDT\n"
+                    f"💳 Оплачено: {VIP_PRICE_USDT} USDT через @send\n"
                     f"👑 Действует 30 дней\n\n"
                     f"Теперь доступно:\n"
                     f"✅ Моментальные выплаты\n"
@@ -774,8 +793,8 @@ def check_crypto_payment(call):
     else:
         bot.answer_callback_query(call.id, "⏳ Ожидаем оплату...", show_alert=True)
 
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_crypto_payment")
-def cancel_crypto_payment(call):
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_wallet_payment")
+def cancel_wallet_payment(call):
     try:
         bot.edit_message_text(
             "❌ Оплата отменена",
@@ -803,7 +822,7 @@ def vip_info_callback(call):
         "   Быстрые ответы от администрации\n\n"
         "5️⃣ 🚀 Эксклюзивный доступ\n"
         "   К новым функциям первыми\n\n"
-        f"💰 Цена: {VIP_PRICE_USDT} USDT на 30 дней"
+        f"💰 Цена: {VIP_PRICE_USDT} USDT через @send на 30 дней"
     )
     bot.answer_callback_query(call.id)
     bot.send_message(call.message.chat.id, vip_info_text, reply_markup=main_kb())
@@ -872,7 +891,7 @@ def withdraw_menu(msg):
     )
     
     if not vip_status:
-        text += f"\n\n💡 Купите VIP за {VIP_PRICE_USDT} USDT и получайте выплаты моментально!"
+        text += f"\n\n💡 Купите VIP за {VIP_PRICE_USDT} USDT через @send и получайте выплаты моментально!"
     
     bot.send_message(msg.chat.id, text, reply_markup=main_kb())
 
@@ -922,7 +941,7 @@ def withdraw(msg):
     response = f"✅ Заявка на {amount} ⭐ отправлена!\n📅 {wait_text}"
     
     if not vip_status:
-        response += f"\n\n💡 С VIP вы бы получили выплату моментально вместо {WITHDRAW_WAIT_DAYS} дней ожидания!\nКупите VIP за {VIP_PRICE_USDT} USDT"
+        response += f"\n\n💡 С VIP вы бы получили выплату моментально вместо {WITHDRAW_WAIT_DAYS} дней ожидания!\nКупите VIP за {VIP_PRICE_USDT} USDT через @send"
     
     bot.send_message(msg.chat.id, response, reply_markup=main_kb())
 
@@ -955,8 +974,8 @@ def stats(msg):
     except:
         vip_count = 0
     
-    c.execute("SELECT COUNT(*) FROM crypto_payments WHERE status = 'completed'")
-    crypto_payments = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM wallet_payments WHERE status = 'completed'")
+    wallet_payments = c.fetchone()[0] or 0
     
     conn.close()
     
@@ -967,7 +986,7 @@ def stats(msg):
         f"👑 VIP: {vip_count}\n"
         f"🔄 Кликов: {clicks}\n"
         f"⭐ Заработано: {earned:.1f}\n"
-        f"💳 Крипто-оплат: {crypto_payments}",
+        f"💳 Оплат через @send: {wallet_payments}",
         reply_markup=admin_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👥 Все пользователи")
@@ -1047,21 +1066,21 @@ def vip_list(msg):
     bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
 
 @bot.message_handler(func=lambda m: m.text == "💳 Платежи")
-def crypto_payments_list(msg):
+def wallet_payments_list(msg):
     if msg.from_user.id not in ADMIN_IDS:
         return
     
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT id, user_id, amount, currency, status, created_at FROM crypto_payments ORDER BY id DESC LIMIT 20")
+    c.execute("SELECT id, user_id, amount, currency, status, created_at FROM wallet_payments ORDER BY id DESC LIMIT 20")
     payments = c.fetchall()
     conn.close()
     
     if not payments:
-        bot.send_message(msg.chat.id, "Нет крипто-платежей", reply_markup=admin_kb())
+        bot.send_message(msg.chat.id, "Нет платежей через @send", reply_markup=admin_kb())
         return
     
-    text = "💳 КРИПТО-ПЛАТЕЖИ\n\n"
+    text = "💳 ПЛАТЕЖИ ЧЕРЕЗ @send\n\n"
     for p in payments:
         status_icon = "✅" if p[4] == 'completed' else "⏳" if p[4] == 'pending' else "❌"
         text += f"#{p[0]} | {p[2]} {p[3]} | {status_icon} {p[4]} | {p[1]}\n"
@@ -1214,19 +1233,24 @@ def remove_vip(msg):
 if __name__ == "__main__":
     init_db()
     init_fake_top()
+    
     print("🤖 Бот запущен!")
     print(f"👑 VIP цена: {VIP_PRICE_USDT} USDT")
     print(f"📊 Обычный лимит: {DAILY_CLICK_LIMIT}")
     print(f"📊 VIP лимит: {VIP_DAILY_CLICK_LIMIT}")
     
-    if CRYPTO_BOT_TOKEN and CRYPTO_BOT_TOKEN != 'None' and CRYPTO_BOT_TOKEN != '':
-        print(f"💳 CryptoBot: ✅ Настроен")
-        print(f"   Токен: {CRYPTO_BOT_TOKEN[:10]}...{CRYPTO_BOT_TOKEN[-5:]}")
+    if WALLET_AVAILABLE:
+        print("💳 Wallet Pay (@send): ✅ Настроен")
     else:
-        print(f"💳 CryptoBot: ❌ НЕ НАСТРОЕН!")
-        print(f"   Добавьте CRYPTO_BOT_TOKEN в переменные окружения")
+        print("💳 Wallet Pay (@send): ❌ НЕ НАСТРОЕН!")
+        print("   Добавьте переменные в Railway:")
+        print("   - WALLET_PAY_API_KEY")
+        print("   - WALLET_PAY_SECRET")
     
-    print(f"📢 Реклама: ❌ ОТКЛЮЧЕНА")
+    print("📢 Реклама: ❌ ОТКЛЮЧЕНА")
+    print("💳 Оплата: через @send (Wallet Pay)")
     print("✅ Бот готов к работе!")
+    
     bot.remove_webhook()
-    bot.polling(none_stop=True)
+    time.sleep(1)
+    bot.polling(none_stop=True, skip_pending=True, interval=0)
