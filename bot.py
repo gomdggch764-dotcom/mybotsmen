@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import time
+import requests
 from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,6 +16,7 @@ load_dotenv()
 
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_IDS = [6621617827]
+CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN', 'ВАШ_ТОКЕН_КРИПТО_БОТА')
 
 GRAMADS_API_KEY = os.getenv('GRAMADS_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1ODM2MyIsImp0aSI6IjM4MWIyY2RmLThkNzYtNDkzMC1hNGZiLWYwOTAwZDdiYjlhYSIsIm5hbWUiOiJFYXJuU2F2ZWxpeSIsImJvdGlkIjoiMjI3NzEiLCJodHRwOi8vc2NoZW1hcy54bWxzb2FwLm9yZy93cy8yMDA1LzA1L2lkZW50aXR5L2NsYWltcy9uYW1laWRlbnRpZmllciI6IjU4MzYzIiwibmJmIjoxNzg4Mjg3MjQ3LCJleHAiOjE3ODg0OTYwNDcsImlzcyI6IlN0dWdub3YiLCJhdWQiOiJVc2VycyJ9.p_85j4_PQfJ6oO_eiJqkPHB6KQFxCfr4zm2yj9Gjbpk')
 
@@ -24,11 +26,18 @@ DAILY_CLICK_LIMIT = 50
 VIP_DAILY_CLICK_LIMIT = 120
 WITHDRAW_MIN = 120
 WITHDRAW_WAIT_DAYS = 7
-VIP_PRICE = 50
+VIP_PRICE_USDT = 1.0
 REFERRAL_BONUS = 3
 REFERRAL_PERCENT = 10
 DB_NAME = "earn_bot.db"
 FAKE_TOP_FILE = "fake_top.json"
+
+# Настройки игр
+GAME_MIN_BET = 1
+GAME_MAX_BET = 100
+FOOTBALL_MULTIPLIER = 1.5
+BOWLING_MULTIPLIER = 1.8
+SLOTS_MULTIPLIER = 10
 
 START_TIME = time.time()
 ERROR_COUNT = 0
@@ -40,6 +49,60 @@ CHANNELS = [
     {'id': '@EarnSaveliy', 'name': 'EarnSaveliy', 'url': 'https://t.me/EarnSaveliy'}
 ]
 
+# ========== CRYPTO BOT API ==========
+CRYPTO_API_URL = "https://pay.crypt.bot/api"
+
+def create_crypto_invoice(amount, currency='USDT', description='VIP покупка'):
+    try:
+        url = f"{CRYPTO_API_URL}/createInvoice"
+        headers = {
+            'Crypto-Pay-API-Token': CRYPTO_BOT_TOKEN,
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'amount': amount,
+            'currency_type': 'fiat',
+            'currency': currency,
+            'description': description,
+            'payload': description,
+            'expires_in': 3600
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        result = response.json()
+        
+        if result.get('ok'):
+            return result['result']
+        else:
+            logging.error(f"CryptoBot error: {result}")
+            return None
+    except Exception as e:
+        logging.error(f"Error creating invoice: {e}")
+        return None
+
+def get_invoice_status(invoice_id):
+    try:
+        url = f"{CRYPTO_API_URL}/getInvoices"
+        headers = {
+            'Crypto-Pay-API-Token': CRYPTO_BOT_TOKEN,
+            'Content-Type': 'application/json'
+        }
+        params = {
+            'invoice_id': invoice_id
+        }
+        
+        response = requests.get(url, headers=headers, params=params)
+        result = response.json()
+        
+        if result.get('ok') and result['result']['items']:
+            invoice = result['result']['items'][0]
+            return invoice.get('status')
+        return None
+    except Exception as e:
+        logging.error(f"Error checking invoice: {e}")
+        return None
+
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
 def init_fake_top():
     default_fake = [
         {"username": "@kotnavoine", "balance": 2610},
@@ -68,7 +131,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
     
-    # Создаем таблицу пользователей
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id INTEGER UNIQUE,
@@ -92,18 +154,37 @@ def init_db():
         created_at TEXT
     )''')
     
-    # Добавляем колонки для VIP если их нет
     try:
         c.execute("ALTER TABLE users ADD COLUMN is_vip INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
-        pass  # Колонка уже существует
+        pass
     
     try:
         c.execute("ALTER TABLE users ADD COLUMN vip_expires TEXT")
     except sqlite3.OperationalError:
-        pass  # Колонка уже существует
+        pass
     
-    # Создаем остальные таблицы
+    c.execute('''CREATE TABLE IF NOT EXISTS game_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        game_type TEXT,
+        bet REAL,
+        win REAL,
+        result TEXT,
+        created_at TEXT
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS crypto_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        invoice_id INTEGER UNIQUE,
+        amount REAL,
+        currency TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT,
+        completed_at TEXT
+    )''')
+    
     c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -130,14 +211,12 @@ def get_user(tg_id):
     conn = get_db()
     c = conn.cursor()
     try:
-        # Проверяем существование колонок
         c.execute("PRAGMA table_info(users)")
         columns = [col[1] for col in c.fetchall()]
         
         if 'is_vip' in columns and 'vip_expires' in columns:
             c.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_id,))
         else:
-            # Если колонок нет, запрашиваем без них
             c.execute("SELECT id, telegram_id, first_name, username, balance, total_earned, total_withdrawn, clicks, avg_earning, last_click, clicks_today, last_click_date, last_visit, referral_code, referrer_id, referral_count, referral_earned, daily_bonus_date, is_banned, created_at FROM users WHERE telegram_id = ?", (tg_id,))
     except:
         c.execute("SELECT * FROM users WHERE telegram_id = ?", (tg_id,))
@@ -153,7 +232,6 @@ def update_user(tg_id, **kwargs):
         try:
             c.execute(f"UPDATE users SET {key} = ? WHERE telegram_id = ?", (val, tg_id))
         except sqlite3.OperationalError:
-            # Если колонки нет, пропускаем
             pass
     conn.commit()
     conn.close()
@@ -179,7 +257,6 @@ def register_user(tg_id, first_name, username, ref_code=None):
     conn = get_db()
     c = conn.cursor()
     
-    # Проверяем существование колонок
     c.execute("PRAGMA table_info(users)")
     columns = [col[1] for col in c.fetchall()]
     
@@ -205,14 +282,13 @@ def is_vip_active(user):
     if not user:
         return False
     
-    # Проверяем длину кортежа (если колонок меньше 22)
     if len(user) < 22:
         return False
     
-    if not user[20]:  # is_vip
+    if not user[20]:
         return False
     
-    expires = user[21]  # vip_expires
+    expires = user[21]
     if not expires:
         return False
     
@@ -349,38 +425,129 @@ def get_daily_bonus(tg_id):
                 daily_bonus_date=today, last_visit=datetime.datetime.now().isoformat())
     return amount, None
 
-def buy_vip(tg_id):
+def buy_vip_crypto(tg_id, invoice_id):
     user = get_user(tg_id)
     if not user:
         return False, "Пользователь не найден"
     
-    if len(user) < 22:
-        return False, "❌ Ошибка: обновите базу данных"
-    
     if is_vip_active(user):
-        return False, "❌ VIP уже активен!"
+        return False, "VIP уже активен"
     
-    if user[4] < VIP_PRICE:
-        return False, f"❌ Недостаточно звезд! Нужно: {VIP_PRICE} ⭐, у вас: {user[4]:.1f} ⭐"
-    
-    new_balance = user[4] - VIP_PRICE
     expires = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
-    update_user(tg_id, balance=new_balance, is_vip=1, vip_expires=expires)
+    update_user(tg_id, is_vip=1, vip_expires=expires)
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE crypto_payments SET status = 'completed', completed_at = ? WHERE invoice_id = ?",
+              (datetime.datetime.now().isoformat(), invoice_id))
+    conn.commit()
+    conn.close()
+    
     return True, "✅ VIP активирован на 30 дней!"
+
+def log_game(user_id, game_type, bet, win, result):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO game_stats (user_id, game_type, bet, win, result, created_at) VALUES (?,?,?,?,?,?)",
+              (user_id, game_type, bet, win, result, datetime.datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+# ========== ИГРЫ ==========
+
+def play_football(bet):
+    """Футбол - бросок мяча"""
+    # Возможные исходы
+    outcomes = [
+        {"name": "ГООООЛ! 🎯⚽", "multiplier": FOOTBALL_MULTIPLIER, "emoji": "⚽", "win": True},
+        {"name": "Штанга! 😱", "multiplier": 0.3, "emoji": "🥅", "win": True},
+        {"name": "Мимо ворот! ❌", "multiplier": 0, "emoji": "😢", "win": False},
+        {"name": "Вратарь поймал! 🧤", "multiplier": 0, "emoji": "🧤", "win": False},
+        {"name": "Аут! 🏃", "multiplier": 0, "emoji": "🏃", "win": False},
+        {"name": "Пенальти! 🎯", "multiplier": 2.0, "emoji": "🔥", "win": True}
+    ]
+    
+    result = random.choice(outcomes)
+    win = bet * result["multiplier"] if result["win"] else 0
+    
+    return result, win
+
+def play_basketball(bet):
+    """Баскетбол - бросок мяча"""
+    outcomes = [
+        {"name": "ТОЧНОЕ ПОПАДАНИЕ! 🏀🎯", "multiplier": FOOTBALL_MULTIPLIER, "emoji": "🏀", "win": True},
+        {"name": "Кольцо! 😱", "multiplier": 0.3, "emoji": "🔄", "win": True},
+        {"name": "Мимо! ❌", "multiplier": 0, "emoji": "😢", "win": False},
+        {"name": "Блокшот! 🚫", "multiplier": 0, "emoji": "🚫", "win": False},
+        {"name": "Трехочковый! 🎯", "multiplier": 2.5, "emoji": "🔥", "win": True}
+    ]
+    
+    result = random.choice(outcomes)
+    win = bet * result["multiplier"] if result["win"] else 0
+    
+    return result, win
+
+def play_bowling(bet):
+    """Кегли - бросок шара"""
+    outcomes = [
+        {"name": "СТРАЙК! 🎳🔥", "multiplier": BOWLING_MULTIPLIER, "emoji": "🎳", "win": True, "pins": 10},
+        {"name": "Спэр! 👍", "multiplier": 1.2, "emoji": "👍", "win": True, "pins": 9},
+        {"name": "Сбито 8 кеглей! 😊", "multiplier": 0.8, "emoji": "😊", "win": True, "pins": 8},
+        {"name": "Сбито 6 кеглей! 😐", "multiplier": 0.5, "emoji": "😐", "win": True, "pins": 6},
+        {"name": "Мимо! ❌", "multiplier": 0, "emoji": "😢", "win": False, "pins": 0}
+    ]
+    
+    result = random.choice(outcomes)
+    win = bet * result["multiplier"] if result["win"] else 0
+    
+    return result, win
+
+def play_slots(bet):
+    """Слоты - вращение барабанов"""
+    symbols = ['🍒', '🍋', '🍊', '🍇', '7️⃣', '🔔', '💎']
+    results = [random.choice(symbols) for _ in range(3)]
+    
+    # Проверяем комбинации
+    if results.count('7️⃣') == 3:
+        result = {"name": "ДЖЕКПОТ! 🎰💰🔥", "multiplier": SLOTS_MULTIPLIER, "emoji": "🎰", "win": True}
+    elif results.count('💎') == 3:
+        result = {"name": "ТРИ АЛМАЗА! 💎💎💎", "multiplier": 5, "emoji": "💎", "win": True}
+    elif results.count('🍇') == 3:
+        result = {"name": "ТРИ ВИНОГРАДА! 🍇🍇🍇", "multiplier": 3, "emoji": "🍇", "win": True}
+    elif results[0] == results[1] == results[2]:
+        result = {"name": f"ТРИ {results[0]}! 🎉", "multiplier": 2, "emoji": "🎉", "win": True}
+    elif results[0] == results[1] or results[1] == results[2] or results[0] == results[2]:
+        result = {"name": f"Пара {results[0]} 😊", "multiplier": 0.5, "emoji": "😊", "win": True}
+    else:
+        result = {"name": "Ничего не выпало 😢", "multiplier": 0, "emoji": "😢", "win": False}
+    
+    win = bet * result["multiplier"] if result["win"] else 0
+    
+    return result, win, results
+
+# ========== ОСНОВНАЯ КЛАВИАТУРА ==========
 
 def main_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("💰 Заработать", "👤 Профиль")
     kb.row("👥 Друзья", "💸 Вывод")
     kb.row("🏆 Топ", "🎁 Бонус")
-    kb.row("👑 VIP")
+    kb.row("👑 VIP", "🎮 Игры")
     return kb
 
 def admin_kb():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📊 Статистика", "👥 Все пользователи")
     kb.row("🔝 ТОП-20", "✉️ Рассылка")
-    kb.row("👑 VIP список", "◀️ В главное меню")
+    kb.row("👑 VIP список", "💳 Платежи")
+    kb.row("🎮 Игровая статистика", "◀️ В главное меню")
+    return kb
+
+def games_kb():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("⚽ Футбол", "🏀 Баскетбол")
+    kb.row("🎳 Кегли", "🎰 Слоты")
+    kb.row("◀️ В главное меню")
     return kb
 
 bot = TeleBot(TOKEN)
@@ -409,6 +576,8 @@ def sub_keyboard():
 async def show_advert(user_id, api_key):
     await asyncio.sleep(1.5)
     return True
+
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 
 @bot.message_handler(commands=['start'])
 def start(msg):
@@ -442,7 +611,7 @@ def start(msg):
         f"💰 Баланс: {user[4]:.1f} ⭐\n"
         f"📈 Заработано: {user[5]:.1f} ⭐{bonus_msg}\n"
         f"👑 {vip_status}\n\n"
-        f"Жми «💰 Заработать» и получай ⭐!",
+        f"Жми «💰 Заработать» или играй в «🎮 Игры»!",
         reply_markup=main_kb())
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
@@ -471,7 +640,7 @@ def check_sub(call):
         user = get_user(uid)
         vip_status = "👑 VIP" if is_vip_active(user) else "❌ Нет VIP"
         bot.send_message(call.message.chat.id,
-            f"⭐ Добро пожаловать!\n\n💰 Баланс: {user[4]:.1f} ⭐\n👑 {vip_status}\n\nЖми «💰 Заработать»!",
+            f"⭐ Добро пожаловать!\n\n💰 Баланс: {user[4]:.1f} ⭐\n👑 {vip_status}\n\nЖми «💰 Заработать» или «🎮 Игры»!",
             reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "💰 Заработать")
@@ -549,7 +718,7 @@ def profile(msg):
     if not is_vip_active(user):
         bot.send_message(msg.chat.id,
             f"🌟 ХОТИТЕ БОЛЬШЕ ВОЗМОЖНОСТЕЙ?\n\n"
-            f"Купите VIP всего за {VIP_PRICE} ⭐ и получите:\n\n"
+            f"Купите VIP всего за {VIP_PRICE_USDT} USDT\n\n"
             f"✅ Моментальная выплата звезд от Fragment (вместо 3-7 дней)\n"
             f"✅ {VIP_DAILY_CLICK_LIMIT} запросов в день (вместо {DAILY_CLICK_LIMIT})\n"
             f"✅ Отдельная поддержка с быстрым ответом\n"
@@ -579,39 +748,138 @@ def vip_menu(msg):
             reply_markup=main_kb())
     else:
         keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("👑 Купить VIP за 50 ⭐", callback_data="buy_vip"))
+        keyboard.add(InlineKeyboardButton(f"💳 Купить VIP за {VIP_PRICE_USDT} USDT", callback_data="buy_vip_crypto"))
         keyboard.add(InlineKeyboardButton("❓ Что дает VIP?", callback_data="vip_info"))
         
         bot.send_message(msg.chat.id,
             f"👑 VIP СТАТУС\n\n"
-            f"Цена: {VIP_PRICE} ⭐\n"
+            f"Цена: {VIP_PRICE_USDT} USDT\n"
             f"Длительность: 30 дней\n\n"
-            f"Ваш баланс: {user[4]:.1f} ⭐\n\n"
-            f"Нажмите кнопку ниже для покупки:",
+            f"💰 Ваш баланс: {user[4]:.1f} ⭐\n\n"
+            f"Нажмите кнопку для оплаты:",
             reply_markup=keyboard)
 
-@bot.callback_query_handler(func=lambda call: call.data == "buy_vip")
-def buy_vip_callback(call):
+@bot.callback_query_handler(func=lambda call: call.data == "buy_vip_crypto")
+def buy_vip_crypto_callback(call):
     uid = call.from_user.id
-    success, msg_text = buy_vip(uid)
+    user = get_user(uid)
     
-    if success:
-        bot.answer_callback_query(call.id, "✅ VIP активирован!", show_alert=True)
-        user = get_user(uid)
+    if not user:
+        bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
+        return
+    
+    if is_vip_active(user):
+        bot.answer_callback_query(call.id, "❌ VIP уже активен!", show_alert=True)
+        return
+    
+    invoice = create_crypto_invoice(VIP_PRICE_USDT, 'USDT', f'VIP покупка для {uid}')
+    
+    if not invoice:
+        bot.answer_callback_query(call.id, "❌ Ошибка создания платежа", show_alert=True)
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT INTO crypto_payments (user_id, invoice_id, amount, currency, created_at) VALUES (?,?,?,?,?)",
+              (uid, invoice['invoice_id'], VIP_PRICE_USDT, 'USDT', datetime.datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=invoice['pay_url']))
+    keyboard.add(InlineKeyboardButton("🔄 Проверить оплату", callback_data=f"check_crypto_payment_{invoice['invoice_id']}"))
+    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_crypto_payment"))
+    
+    bot.answer_callback_query(call.id, "💳 Счет создан!", show_alert=True)
+    try:
         bot.edit_message_text(
-            f"✅ VIP АКТИВИРОВАН!\n\n"
-            f"💰 Новый баланс: {user[4]:.1f} ⭐\n"
-            f"👑 Действует 30 дней\n\n"
-            f"Теперь доступно:\n"
-            f"✅ Моментальные выплаты\n"
-            f"✅ {VIP_DAILY_CLICK_LIMIT} кликов в день\n"
-            f"✅ Приоритетная поддержка",
+            f"💳 ОПЛАТА VIP\n\n"
+            f"Сумма: {VIP_PRICE_USDT} USDT\n"
+            f"Длительность: 30 дней\n\n"
+            f"Нажмите «ОПЛАТИТЬ» для перехода к оплате\n"
+            f"После оплаты нажмите «Проверить оплату»\n\n"
+            f"⏳ Счет действителен 1 час",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=keyboard
+        )
+    except:
+        bot.send_message(call.message.chat.id,
+            f"💳 ОПЛАТА VIP\n\nСумма: {VIP_PRICE_USDT} USDT\n\nНажмите кнопку для оплаты:",
+            reply_markup=keyboard)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_crypto_payment_"))
+def check_crypto_payment(call):
+    invoice_id = int(call.data.split("_")[3])
+    uid = call.from_user.id
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT status FROM crypto_payments WHERE invoice_id = ? AND user_id = ?", (invoice_id, uid))
+    result = c.fetchone()
+    conn.close()
+    
+    if not result:
+        bot.answer_callback_query(call.id, "❌ Платеж не найден", show_alert=True)
+        return
+    
+    if result[0] == 'completed':
+        bot.answer_callback_query(call.id, "✅ VIP уже активирован!", show_alert=True)
+        return
+    
+    status = get_invoice_status(invoice_id)
+    
+    if status == 'paid' or status == 'confirmed':
+        success, msg_text = buy_vip_crypto(uid, invoice_id)
+        
+        if success:
+            bot.answer_callback_query(call.id, "✅ VIP АКТИВИРОВАН!", show_alert=True)
+            user = get_user(uid)
+            try:
+                bot.edit_message_text(
+                    f"✅ VIP АКТИВИРОВАН!\n\n"
+                    f"💳 Оплачено: {VIP_PRICE_USDT} USDT\n"
+                    f"👑 Действует 30 дней\n\n"
+                    f"Теперь доступно:\n"
+                    f"✅ Моментальные выплаты\n"
+                    f"✅ {VIP_DAILY_CLICK_LIMIT} кликов в день\n"
+                    f"✅ Приоритетная поддержка",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=main_kb()
+                )
+            except:
+                bot.send_message(call.message.chat.id, msg_text, reply_markup=main_kb())
+        else:
+            bot.answer_callback_query(call.id, msg_text, show_alert=True)
+    elif status == 'expired':
+        bot.answer_callback_query(call.id, "❌ Счет истек", show_alert=True)
+        try:
+            bot.edit_message_text(
+                "❌ СЧЕТ ИСТЕК\n\nПопробуйте создать новый",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=main_kb()
+            )
+        except:
+            pass
+    elif status == 'cancelled':
+        bot.answer_callback_query(call.id, "❌ Платеж отменен", show_alert=True)
+    else:
+        bot.answer_callback_query(call.id, "⏳ Ожидаем оплату...", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_crypto_payment")
+def cancel_crypto_payment(call):
+    try:
+        bot.edit_message_text(
+            "❌ Оплата отменена",
             call.message.chat.id,
             call.message.message_id,
             reply_markup=main_kb()
         )
-    else:
-        bot.answer_callback_query(call.id, msg_text, show_alert=True)
+    except:
+        bot.send_message(call.message.chat.id, "❌ Отменено", reply_markup=main_kb())
+    bot.answer_callback_query(call.id, "Отменено")
 
 @bot.callback_query_handler(func=lambda call: call.data == "vip_info")
 def vip_info_callback(call):
@@ -629,10 +897,349 @@ def vip_info_callback(call):
         "   Быстрые ответы от администрации\n\n"
         "5️⃣ 🚀 Эксклюзивный доступ\n"
         "   К новым функциям первыми\n\n"
-        f"💰 Цена: {VIP_PRICE} ⭐ на 30 дней"
+        f"💰 Цена: {VIP_PRICE_USDT} USDT на 30 дней"
     )
     bot.answer_callback_query(call.id)
     bot.send_message(call.message.chat.id, vip_info_text, reply_markup=main_kb())
+
+# ========== ИГРЫ ==========
+
+@bot.message_handler(func=lambda m: m.text == "🎮 Игры")
+def games_menu(msg):
+    bot.send_message(msg.chat.id,
+        "🎮 ИГРОВОЙ КЛУБ\n\n"
+        "Выберите игру:\n"
+        "⚽ Футбол - удар по воротам\n"
+        "🏀 Баскетбол - бросок в кольцо\n"
+        "🎳 Кегли - бросок шара\n"
+        "🎰 Слоты - вращение барабанов\n\n"
+        f"💰 Минимальная ставка: {GAME_MIN_BET} ⭐\n"
+        f"💰 Максимальная ставка: {GAME_MAX_BET} ⭐",
+        reply_markup=games_kb())
+
+@bot.message_handler(func=lambda m: m.text == "◀️ В главное меню")
+def back_main(msg):
+    bot.send_message(msg.chat.id, "✅ Возврат", reply_markup=main_kb())
+
+# ---------- ФУТБОЛ ----------
+@bot.message_handler(func=lambda m: m.text == "⚽ Футбол")
+def football_game(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    bot.send_message(msg.chat.id,
+        f"⚽ ФУТБОЛ\n\n"
+        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
+        f"🎯 Удар по воротам!\n"
+        f"📊 Множитель за гол: {FOOTBALL_MULTIPLIER}x\n"
+        f"💵 Ставка: /football [сумма]\n\n"
+        f"Пример: /football 10",
+        reply_markup=games_kb())
+
+@bot.message_handler(commands=['football'])
+def football_play(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "❌ Формат: /football [сумма]")
+        return
+    
+    try:
+        bet = float(args[1])
+    except:
+        bot.send_message(msg.chat.id, "❌ Введите число")
+        return
+    
+    if bet < GAME_MIN_BET:
+        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
+        return
+    
+    if bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+        return
+    
+    if bet > user[4]:
+        bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
+        return
+    
+    # Играем - бросаем мяч
+    result, win = play_football(bet)
+    
+    if win > 0:
+        update_user(uid, balance=user[4] + win - bet)
+        new_balance = user[4] + win - bet
+    else:
+        update_user(uid, balance=user[4] - bet)
+        new_balance = user[4] - bet
+    
+    log_game(uid, 'football', bet, win, result['name'])
+    
+    # Анимация броска
+    animation = ["⚽", "⚽⚽", "⚽⚽⚽", "⚽⚽⚽⚽"]
+    for frame in animation:
+        bot.send_message(msg.chat.id, frame)
+        time.sleep(0.3)
+    
+    result_text = (
+        f"⚽ РЕЗУЛЬТАТ МАТЧА\n\n"
+        f"💵 Ставка: {bet} ⭐\n"
+        f"🎯 {result['name']}\n"
+        f"💰 Множитель: {result['multiplier']}x\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"💳 Новый баланс: {new_balance:.1f} ⭐"
+    )
+    
+    bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
+
+# ---------- БАСКЕТБОЛ ----------
+@bot.message_handler(func=lambda m: m.text == "🏀 Баскетбол")
+def basketball_game(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    bot.send_message(msg.chat.id,
+        f"🏀 БАСКЕТБОЛ\n\n"
+        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
+        f"🎯 Бросок в кольцо!\n"
+        f"📊 Множитель за попадание: {FOOTBALL_MULTIPLIER}x\n"
+        f"💵 Ставка: /basketball [сумма]\n\n"
+        f"Пример: /basketball 10",
+        reply_markup=games_kb())
+
+@bot.message_handler(commands=['basketball'])
+def basketball_play(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "❌ Формат: /basketball [сумма]")
+        return
+    
+    try:
+        bet = float(args[1])
+    except:
+        bot.send_message(msg.chat.id, "❌ Введите число")
+        return
+    
+    if bet < GAME_MIN_BET:
+        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
+        return
+    
+    if bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+        return
+    
+    if bet > user[4]:
+        bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
+        return
+    
+    # Играем - бросаем мяч
+    result, win = play_basketball(bet)
+    
+    if win > 0:
+        update_user(uid, balance=user[4] + win - bet)
+        new_balance = user[4] + win - bet
+    else:
+        update_user(uid, balance=user[4] - bet)
+        new_balance = user[4] - bet
+    
+    log_game(uid, 'basketball', bet, win, result['name'])
+    
+    # Анимация броска
+    animation = ["🏀", "🏀🏀", "🏀🏀🏀", "🏀🏀🏀🏀"]
+    for frame in animation:
+        bot.send_message(msg.chat.id, frame)
+        time.sleep(0.3)
+    
+    result_text = (
+        f"🏀 РЕЗУЛЬТАТ МАТЧА\n\n"
+        f"💵 Ставка: {bet} ⭐\n"
+        f"🎯 {result['name']}\n"
+        f"💰 Множитель: {result['multiplier']}x\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"💳 Новый баланс: {new_balance:.1f} ⭐"
+    )
+    
+    bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
+
+# ---------- КЕГЛИ ----------
+@bot.message_handler(func=lambda m: m.text == "🎳 Кегли")
+def bowling_game(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    bot.send_message(msg.chat.id,
+        f"🎳 КЕГЛИ\n\n"
+        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
+        f"🎯 Бросок шара!\n"
+        f"📊 Множитель за страйк: {BOWLING_MULTIPLIER}x\n"
+        f"💵 Ставка: /bowling [сумма]\n\n"
+        f"Пример: /bowling 10",
+        reply_markup=games_kb())
+
+@bot.message_handler(commands=['bowling'])
+def bowling_play(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "❌ Формат: /bowling [сумма]")
+        return
+    
+    try:
+        bet = float(args[1])
+    except:
+        bot.send_message(msg.chat.id, "❌ Введите число")
+        return
+    
+    if bet < GAME_MIN_BET:
+        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
+        return
+    
+    if bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+        return
+    
+    if bet > user[4]:
+        bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
+        return
+    
+    # Играем - бросаем шар
+    result, win = play_bowling(bet)
+    
+    if win > 0:
+        update_user(uid, balance=user[4] + win - bet)
+        new_balance = user[4] + win - bet
+    else:
+        update_user(uid, balance=user[4] - bet)
+        new_balance = user[4] - bet
+    
+    log_game(uid, 'bowling', bet, win, result['name'])
+    
+    # Анимация броска
+    animation = ["🎳", "🎳➡️", "🎳➡️➡️", "🎳➡️➡️➡️"]
+    for frame in animation:
+        bot.send_message(msg.chat.id, frame)
+        time.sleep(0.3)
+    
+    pins_info = f"🎯 Сбито: {result.get('pins', '?')}/10" if 'pins' in result else ""
+    
+    result_text = (
+        f"🎳 РЕЗУЛЬТАТ БРОСКА\n\n"
+        f"💵 Ставка: {bet} ⭐\n"
+        f"🎯 {result['name']}\n"
+        f"{pins_info}\n" if pins_info else ""
+        f"💰 Множитель: {result['multiplier']}x\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"💳 Новый баланс: {new_balance:.1f} ⭐"
+    )
+    
+    bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
+
+# ---------- СЛОТЫ ----------
+@bot.message_handler(func=lambda m: m.text == "🎰 Слоты")
+def slots_game(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    bot.send_message(msg.chat.id,
+        f"🎰 СЛОТЫ\n\n"
+        f"💰 Ваш баланс: {user[4]:.1f} ⭐\n"
+        f"🎯 3 семерки - {SLOTS_MULTIPLIER}x\n"
+        f"💎 3 алмаза - 5x\n"
+        f"🍇 3 винограда - 3x\n"
+        f"💵 Ставка: /slots [сумма]\n\n"
+        f"Пример: /slots 10",
+        reply_markup=games_kb())
+
+@bot.message_handler(commands=['slots'])
+def slots_play(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "❌ Формат: /slots [сумма]")
+        return
+    
+    try:
+        bet = float(args[1])
+    except:
+        bot.send_message(msg.chat.id, "❌ Введите число")
+        return
+    
+    if bet < GAME_MIN_BET:
+        bot.send_message(msg.chat.id, f"❌ Минимальная ставка: {GAME_MIN_BET} ⭐")
+        return
+    
+    if bet > GAME_MAX_BET:
+        bot.send_message(msg.chat.id, f"❌ Максимальная ставка: {GAME_MAX_BET} ⭐")
+        return
+    
+    if bet > user[4]:
+        bot.send_message(msg.chat.id, f"❌ Недостаточно средств! Баланс: {user[4]:.1f} ⭐")
+        return
+    
+    # Играем - крутим слоты
+    result, win, symbols = play_slots(bet)
+    
+    if win > 0:
+        update_user(uid, balance=user[4] + win - bet)
+        new_balance = user[4] + win - bet
+    else:
+        update_user(uid, balance=user[4] - bet)
+        new_balance = user[4] - bet
+    
+    log_game(uid, 'slots', bet, win, result['name'])
+    
+    # Анимация вращения
+    animation = ["🎰", "🎰🌀", "🎰🌀🌀", "🎰🌀🌀🌀"]
+    for frame in animation:
+        bot.send_message(msg.chat.id, frame)
+        time.sleep(0.3)
+    
+    symbols_display = " | ".join(symbols)
+    result_text = (
+        f"🎰 РЕЗУЛЬТАТ\n\n"
+        f"💵 Ставка: {bet} ⭐\n"
+        f"🎰 {symbols_display}\n"
+        f"🎯 {result['name']}\n"
+        f"💰 Множитель: {result['multiplier']}x\n"
+        f"{'🎉' if win > 0 else '😢'} Выигрыш: {win:.1f} ⭐\n\n"
+        f"💳 Новый баланс: {new_balance:.1f} ⭐"
+    )
+    
+    bot.send_message(msg.chat.id, result_text, reply_markup=games_kb())
+
+# ========== ОСТАЛЬНЫЕ ФУНКЦИИ ==========
 
 @bot.message_handler(func=lambda m: m.text == "👥 Друзья")
 def friends(msg):
@@ -694,7 +1301,7 @@ def withdraw_menu(msg):
     )
     
     if not vip_status:
-        text += f"\n\n💡 Купите VIP за {VIP_PRICE} ⭐ и получайте выплаты моментально!"
+        text += f"\n\n💡 Купите VIP за {VIP_PRICE_USDT} USDT и получайте выплаты моментально!"
     
     bot.send_message(msg.chat.id, text, reply_markup=main_kb())
 
@@ -744,7 +1351,7 @@ def withdraw(msg):
     response = f"✅ Заявка на {amount} ⭐ отправлена!\n📅 {wait_text}"
     
     if not vip_status:
-        response += f"\n\n💡 С VIP вы бы получили выплату моментально вместо {WITHDRAW_WAIT_DAYS} дней ожидания!\nКупите VIP за {VIP_PRICE} ⭐"
+        response += f"\n\n💡 С VIP вы бы получили выплату моментально вместо {WITHDRAW_WAIT_DAYS} дней ожидания!\nКупите VIP за {VIP_PRICE_USDT} USDT"
     
     bot.send_message(msg.chat.id, response, reply_markup=main_kb())
 
@@ -771,12 +1378,20 @@ def stats(msg):
     c.execute("SELECT SUM(total_earned) FROM users WHERE is_banned=0")
     earned = c.fetchone()[0] or 0
     
-    # Считаем VIP
     try:
         c.execute("SELECT COUNT(*) FROM users WHERE is_vip=1 AND vip_expires > datetime('now')")
         vip_count = c.fetchone()[0] or 0
     except:
         vip_count = 0
+    
+    c.execute("SELECT COUNT(*) FROM crypto_payments WHERE status = 'completed'")
+    crypto_payments = c.fetchone()[0] or 0
+    
+    c.execute("SELECT COUNT(*) FROM game_stats")
+    total_games = c.fetchone()[0] or 0
+    
+    c.execute("SELECT SUM(win) FROM game_stats WHERE win > 0")
+    total_wins = c.fetchone()[0] or 0
     
     conn.close()
     
@@ -786,8 +1401,52 @@ def stats(msg):
         f"🟢 Активных: {active}\n"
         f"👑 VIP: {vip_count}\n"
         f"🔄 Кликов: {clicks}\n"
-        f"⭐ Заработано: {earned:.1f}",
+        f"⭐ Заработано: {earned:.1f}\n"
+        f"💳 Крипто-оплат: {crypto_payments}\n"
+        f"🎮 Игр сыграно: {total_games}\n"
+        f"🏆 Выиграно: {total_wins:.1f} ⭐",
         reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "🎮 Игровая статистика")
+def game_stats_admin(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    games = ['football', 'basketball', 'bowling', 'slots']
+    stats_text = "🎮 ИГРОВАЯ СТАТИСТИКА\n\n"
+    
+    emojis = {'football': '⚽', 'basketball': '🏀', 'bowling': '🎳', 'slots': '🎰'}
+    names = {'football': 'Футбол', 'basketball': 'Баскетбол', 'bowling': 'Кегли', 'slots': 'Слоты'}
+    
+    for game in games:
+        c.execute("SELECT COUNT(*), SUM(win), SUM(bet) FROM game_stats WHERE game_type = ?", (game,))
+        result = c.fetchone()
+        count = result[0] or 0
+        total_win = result[1] or 0
+        total_bet = result[2] or 0
+        
+        if count > 0:
+            win_rate = (total_win / total_bet * 100) if total_bet > 0 else 0
+            stats_text += f"{emojis[game]} {names[game]}: {count} игр, выиграно {total_win:.1f}⭐, RTP: {win_rate:.1f}%\n"
+    
+    c.execute("SELECT user_id, SUM(win - bet) FROM game_stats GROUP BY user_id ORDER BY SUM(win - bet) DESC LIMIT 5")
+    top_players = c.fetchall()
+    
+    if top_players:
+        stats_text += "\n🏆 ТОП-5 ИГРОКОВ:\n"
+        for i, p in enumerate(top_players):
+            uid = p[0]
+            profit = p[1] or 0
+            user = get_user(uid)
+            name = user[2] if user else str(uid)
+            stats_text += f"{i+1}. {name}: {profit:.1f}⭐\n"
+    
+    conn.close()
+    
+    bot.send_message(msg.chat.id, stats_text, reply_markup=admin_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👥 Все пользователи")
 def all_users(msg):
@@ -862,6 +1521,28 @@ def vip_list(msg):
             text += f"• {v[1]} (@{v[2] or '—'}) — {v[3]:.1f}⭐, осталось {days_left} дн.\n"
         except:
             text += f"• {v[1]} (@{v[2] or '—'}) — {v[3]:.1f}⭐\n"
+    
+    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "💳 Платежи")
+def crypto_payments_list(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, user_id, amount, currency, status, created_at FROM crypto_payments ORDER BY id DESC LIMIT 20")
+    payments = c.fetchall()
+    conn.close()
+    
+    if not payments:
+        bot.send_message(msg.chat.id, "Нет крипто-платежей", reply_markup=admin_kb())
+        return
+    
+    text = "💳 КРИПТО-ПЛАТЕЖИ\n\n"
+    for p in payments:
+        status_icon = "✅" if p[4] == 'completed' else "⏳" if p[4] == 'pending' else "❌"
+        text += f"#{p[0]} | {p[2]} {p[3]} | {status_icon} {p[4]} | {p[1]}\n"
     
     bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
 
@@ -1007,17 +1688,28 @@ def remove_vip(msg):
     update_user(user[0], is_vip=0, vip_expires=None)
     bot.send_message(msg.chat.id, f"✅ VIP удален у {user[1]}")
 
-@bot.message_handler(func=lambda m: m.text == "◀️ В главное меню")
-def back(msg):
-    bot.send_message(msg.chat.id, "✅ Возврат", reply_markup=main_kb())
+@bot.message_handler(commands=['delgame'])
+def delete_game_stats(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM game_stats")
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(msg.chat.id, "✅ Игровая статистика очищена", reply_markup=admin_kb())
 
 # Запуск
 if __name__ == "__main__":
     init_db()
     init_fake_top()
     print("🤖 Бот запущен!")
-    print(f"👑 VIP цена: {VIP_PRICE} ⭐")
+    print(f"👑 VIP цена: {VIP_PRICE_USDT} USDT")
     print(f"📊 Обычный лимит: {DAILY_CLICK_LIMIT}")
     print(f"📊 VIP лимит: {VIP_DAILY_CLICK_LIMIT}")
+    print(f"💳 CryptoBot: {'✅' if CRYPTO_BOT_TOKEN != 'ВАШ_ТОКЕН_КРИПТО_БОТА' else '❌'}")
+    print(f"🎮 Игры: ⚽ Футбол, 🏀 Баскетбол, 🎳 Кегли, 🎰 Слоты")
     bot.remove_webhook()
     bot.polling(none_stop=True)
