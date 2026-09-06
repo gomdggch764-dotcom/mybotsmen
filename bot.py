@@ -35,6 +35,7 @@ FAKE_TOP_FILE = "fake_top.json"
 START_TIME = time.time()
 ERROR_COUNT = 0
 
+
 CHANNELS = [
     {'id': '@spookyscripts', 'name': 'Spooky Scripts', 'url': 'https://t.me/spookyscripts'},
     {'id': '-1003788328996', 'name': 'SPOOKY MOD', 'url': 'https://t.me/+GMHDq5Fij2M5MmFh'},
