@@ -3,7 +3,6 @@ import sqlite3
 import random
 import datetime
 import json
-import asyncio
 import logging
 import os
 import time
@@ -16,25 +15,22 @@ load_dotenv()
 
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_IDS = [6621617827]
-CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN')  # Берем из переменных окружения
+CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN')
 
-GRAMADS_API_KEY = os.getenv('GRAMADS_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1ODM2MyIsImp0aSI6IjM4MWIyY2RmLThkNzYtNDkzMC1hNGZiLWYwOTAwZDdiYjlhYSIsIm5hbWUiOiJFYXJuU2F2ZWxpeSIsImJvdGlkIjoiMjI3NzEiLCJodHRwOi8vc2NoZW1hcy54bWxzb2FwLm9yZy93cy8yMDA1LzA1L2lkZW50aXR5L2NsYWltcy9uYW1laWRlbnRpZmllciI6IjU4MzYzIiwibmJmIjoxNzg4Mjg3MjQ3LCJleHAiOjE3ODg0OTYwNDcsImlzcyI6IlN0dWdub3YiLCJhdWQiOiJVc2VycyJ9.p_85j4_PQfJ6oO_eiJqkPHB6KQFxCfr4zm2yj9Gjbpk')
-
-MIN_EARN = 0.43
-MAX_EARN = 0.60
+MIN_EARN = 2.3
+MAX_EARN = 3.5
 DAILY_CLICK_LIMIT = 50
-VIP_DAILY_CLICK_LIMIT = 50
+VIP_DAILY_CLICK_LIMIT = 120
 WITHDRAW_MIN = 120
 WITHDRAW_WAIT_DAYS = 7
 VIP_PRICE_USDT = 1.0
 REFERRAL_BONUS = 3
-REFERRAL_PERCENT = 3
+REFERRAL_PERCENT = 10
 DB_NAME = "earn_bot.db"
 FAKE_TOP_FILE = "fake_top.json"
 
 START_TIME = time.time()
 ERROR_COUNT = 0
-
 
 CHANNELS = [
     {'id': '@spookyscripts', 'name': 'Spooky Scripts', 'url': 'https://t.me/spookyscripts'},
@@ -48,7 +44,6 @@ CRYPTO_API_URL = "https://pay.crypt.bot/api"
 
 def create_crypto_invoice(amount, currency='USDT', description='VIP покупка'):
     """Создание счета в CryptoBot"""
-    # Проверяем наличие токена
     if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == 'None':
         logging.error("CRYPTO_BOT_TOKEN не настроен!")
         return None
@@ -480,10 +475,6 @@ def sub_keyboard():
     kb.add(InlineKeyboardButton("✅ Проверить", callback_data="check_sub"))
     return kb
 
-async def show_advert(user_id, api_key):
-    await asyncio.sleep(1.5)
-    return True
-
 # ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 
 @bot.message_handler(commands=['start'])
@@ -565,29 +556,17 @@ def earn(msg):
         bot.send_message(msg.chat.id, f"⚠️ Подпишитесь:\n\n{channels_text}", reply_markup=sub_keyboard())
         return
     
-    bot.send_message(msg.chat.id, "📺 Реклама...")
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        success = loop.run_until_complete(show_advert(uid, GRAMADS_API_KEY))
-        loop.close()
-        if success:
-            amount, err = earn_stars(uid)
-            if err:
-                bot.send_message(msg.chat.id, err)
-                return
-            user = get_user(uid)
-            click_limit = get_vip_click_limit(user)
-            vip_text = " (VIP)" if is_vip_active(user) else ""
-            bot.send_message(msg.chat.id,
-                f"⭐ +{amount} ⭐!\n💰 Баланс: {user[4]:.1f} ⭐\n📊 Сегодня: {user[10]}/{click_limit}{vip_text}",
-                reply_markup=main_kb())
-        else:
-            bot.send_message(msg.chat.id, "❌ Ошибка рекламы")
-    except Exception as e:
-        ERROR_COUNT += 1
-        logging.error(f"Earn error: {e}")
-        bot.send_message(msg.chat.id, "❌ Ошибка")
+    # Просто даем звезды без рекламы
+    amount, err = earn_stars(uid)
+    if err:
+        bot.send_message(msg.chat.id, err)
+        return
+    user = get_user(uid)
+    click_limit = get_vip_click_limit(user)
+    vip_text = " (VIP)" if is_vip_active(user) else ""
+    bot.send_message(msg.chat.id,
+        f"⭐ +{amount} ⭐!\n💰 Баланс: {user[4]:.1f} ⭐\n📊 Сегодня: {user[10]}/{click_limit}{vip_text}",
+        reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(msg):
@@ -642,7 +621,7 @@ def vip_menu(msg):
         return
     
     # Проверяем настроен ли CryptoBot
-    crypto_available = CRYPTO_BOT_TOKEN and CRYPTO_BOT_TOKEN != 'None'
+    crypto_available = CRYPTO_BOT_TOKEN and CRYPTO_BOT_TOKEN != 'None' and CRYPTO_BOT_TOKEN != ''
     
     if is_vip_active(user):
         expires = datetime.datetime.fromisoformat(user[21])
@@ -694,8 +673,7 @@ def buy_vip_crypto_callback(call):
         bot.answer_callback_query(call.id, "❌ VIP уже активен!", show_alert=True)
         return
     
-    # Проверяем наличие токена
-    if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == 'None':
+    if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == 'None' or CRYPTO_BOT_TOKEN == '':
         bot.answer_callback_query(call.id, "❌ CryptoBot не настроен! Обратитесь к администратору.", show_alert=True)
         return
     
@@ -1240,11 +1218,14 @@ if __name__ == "__main__":
     print(f"📊 Обычный лимит: {DAILY_CLICK_LIMIT}")
     print(f"📊 VIP лимит: {VIP_DAILY_CLICK_LIMIT}")
     
-    # Проверка CryptoBot
-    if CRYPTO_BOT_TOKEN and CRYPTO_BOT_TOKEN != 'None':
+    if CRYPTO_BOT_TOKEN and CRYPTO_BOT_TOKEN != 'None' and CRYPTO_BOT_TOKEN != '':
         print(f"💳 CryptoBot: ✅ Настроен")
+        print(f"   Токен: {CRYPTO_BOT_TOKEN[:10]}...{CRYPTO_BOT_TOKEN[-5:]}")
     else:
-        print(f"💳 CryptoBot: ❌ НЕ НАСТРОЕН! Добавьте CRYPTO_BOT_TOKEN в переменные окружения")
+        print(f"💳 CryptoBot: ❌ НЕ НАСТРОЕН!")
+        print(f"   Добавьте CRYPTO_BOT_TOKEN в переменные окружения")
     
+    print(f"📢 Реклама: ❌ ОТКЛЮЧЕНА")
+    print("✅ Бот готов к работе!")
     bot.remove_webhook()
     bot.polling(none_stop=True)
