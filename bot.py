@@ -15,8 +15,7 @@ load_dotenv()
 
 TOKEN = os.getenv('BOT_TOKEN')
 CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN', '')
-ADMIN_IDS = [6621617827, 7326365411]
-
+ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]
 # ========== CRYPTO BOT ==========
 CRYPTO_API_URL = "https://pay.crypt.bot/api"
 
