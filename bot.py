@@ -419,7 +419,6 @@ def buy_vip_wallet(tg_id, invoice_id):
     if is_vip_active(user):
         return False, "VIP уже активен"
     
-    # Проверяем статус платежа
     status = get_wallet_invoice_status(invoice_id)
     if status not in ['paid', 'confirmed']:
         return False, "❌ Платеж не оплачен"
@@ -816,5 +815,412 @@ def friends(msg):
     uid = msg.from_user.id
     user = get_user(uid)
     if not user:
-        bot.send_message
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    bot.send_message(msg.chat.id,
+        f"👥 РЕФЕРАЛКА\n\n💰 За друга: +{REFERRAL_BONUS} ⭐\n"
+        f"📊 Пассив: {REFERRAL_PERCENT}%\n\n"
+        f"🔗 Ссылка:\nhttps://t.me/{(bot.get_me()).username}?start={user[13]}\n\n"
+        f"👥 Друзей: {user[15]}\n💰 Заработано: {user[16]:.1f} ⭐",
+        reply_markup=main_kb())
+
+@bot.message_handler(func=lambda m: m.text == "🏆 Топ")
+def top(msg):
+    users = get_top_users(10)
+    uid = msg.from_user.id
+    rank = get_user_rank(uid)
+    text = "🏆 ТОП-10\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (uname, bal) in enumerate(users):
+        m = medals[i] if i < 3 else f"{i+1}."
+        text += f"{m} {uname} — {bal:.1f} ⭐\n"
+    text += f"\n📊 Ваше место: #{rank}"
+    bot.send_message(msg.chat.id, text, reply_markup=main_kb())
+
+@bot.message_handler(func=lambda m: m.text == "🎁 Бонус")
+def bonus(msg):
+    uid = msg.from_user.id
+    amount, err = get_daily_bonus(uid)
+    if err:
+        bot.send_message(msg.chat.id, err, reply_markup=main_kb())
+        return
+    user = get_user(uid)
+    vip_text = " (VIP бонус)" if is_vip_active(user) else ""
+    bot.send_message(msg.chat.id,
+        f"🎁 +{amount} ⭐{vip_text}!\n💰 Баланс: {user[4]:.1f} ⭐",
+        reply_markup=main_kb())
+
+@bot.message_handler(func=lambda m: m.text == "💸 Вывод")
+def withdraw_menu(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
     
+    vip_status = is_vip_active(user)
+    wait_time = "МОМЕНТАЛЬНО ⚡" if vip_status else f"{WITHDRAW_WAIT_DAYS} дней"
+    
+    text = (
+        f"💸 ВЫВОД\n\n"
+        f"Минимум: {WITHDRAW_MIN} ⭐\n"
+        f"⏳ Время ожидания: {wait_time}\n"
+        f"👑 Ваш статус: {'VIP' if vip_status else 'Обычный'}\n\n"
+        f"/withdraw СУММА"
+    )
+    
+    if not vip_status:
+        text += f"\n\n💡 Купите VIP за {VIP_PRICE_USDT} USDT и получайте выплаты моментально!"
+    
+    bot.send_message(msg.chat.id, text, reply_markup=main_kb())
+
+@bot.message_handler(commands=['withdraw'])
+def withdraw(msg):
+    uid = msg.from_user.id
+    user = get_user(uid)
+    if not user:
+        bot.send_message(msg.chat.id, "Напишите /start")
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "Укажите сумму: /withdraw 10")
+        return
+    
+    try:
+        amount = float(args[1])
+    except:
+        bot.send_message(msg.chat.id, "Введите число")
+        return
+    
+    if amount < WITHDRAW_MIN:
+        bot.send_message(msg.chat.id, f"Минимум: {WITHDRAW_MIN} ⭐")
+        return
+    
+    if amount > user[4]:
+        bot.send_message(msg.chat.id, "Недостаточно средств")
+        return
+    
+    new_balance = user[4] - amount
+    new_withdrawn = user[6] + amount
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET balance = ?, total_withdrawn = ? WHERE telegram_id = ?",
+              (new_balance, new_withdrawn, uid))
+    now = datetime.datetime.now().isoformat()
+    c.execute("INSERT INTO withdrawals (user_id, amount, requested_at) VALUES (?, ?, ?)",
+              (user[0], amount, now))
+    conn.commit()
+    conn.close()
+    
+    vip_status = is_vip_active(user)
+    wait_text = "⚡ МОМЕНТАЛЬНО!" if vip_status else f"⏳ Ожидание {WITHDRAW_WAIT_DAYS} дней"
+    
+    response = f"✅ Заявка на {amount} ⭐ отправлена!\n📅 {wait_text}"
+    
+    if not vip_status:
+        response += f"\n\n💡 С VIP вы бы получили выплату моментально вместо {WITHDRAW_WAIT_DAYS} дней ожидания!\nКупите VIP за {VIP_PRICE_USDT} USDT через @send"
+    
+    bot.send_message(msg.chat.id, response, reply_markup=main_kb())
+
+# ========== АДМИН-ПАНЕЛЬ ==========
+
+@bot.message_handler(commands=['admin'])
+def admin(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.send_message(msg.chat.id, "❌ Нет доступа")
+        return
+    bot.send_message(msg.chat.id, "🛡️ АДМИН-ПАНЕЛЬ", reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
+def stats(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    total = get_total_users()
+    active = get_active_users()
+    clicks = get_total_clicks()
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT SUM(total_earned) FROM users WHERE is_banned=0")
+    earned = c.fetchone()[0] or 0
+    
+    try:
+        c.execute("SELECT COUNT(*) FROM users WHERE is_vip=1 AND vip_expires > datetime('now')")
+        vip_count = c.fetchone()[0] or 0
+    except:
+        vip_count = 0
+    
+    c.execute("SELECT COUNT(*) FROM wallet_payments WHERE status = 'completed'")
+    wallet_payments = c.fetchone()[0] or 0
+    
+    conn.close()
+    
+    bot.send_message(msg.chat.id,
+        f"📊 СТАТИСТИКА\n\n"
+        f"👥 Всего: {total}\n"
+        f"🟢 Активных: {active}\n"
+        f"👑 VIP: {vip_count}\n"
+        f"🔄 Кликов: {clicks}\n"
+        f"⭐ Заработано: {earned:.1f}\n"
+        f"💳 Оплат через @send: {wallet_payments}",
+        reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "👥 Все пользователи")
+def all_users(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    try:
+        c.execute("SELECT telegram_id, first_name, username, balance, is_vip FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 30")
+        users = c.fetchall()
+    except:
+        c.execute("SELECT telegram_id, first_name, username, balance FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 30")
+        users = [(u[0], u[1], u[2], u[3], 0) for u in c.fetchall()]
+    
+    conn.close()
+    
+    if not users:
+        bot.send_message(msg.chat.id, "Нет пользователей", reply_markup=admin_kb())
+        return
+    
+    text = "👥 ПОЛЬЗОВАТЕЛИ\n\n"
+    for i, u in enumerate(users):
+        vip_icon = "👑 " if len(u) > 4 and u[4] else ""
+        text += f"{i+1}. {vip_icon}{u[1]} (@{u[2] or '—'}) — {u[3]:.1f} ⭐\n"
+    
+    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "🔝 ТОП-20")
+def top20(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT username, balance FROM users WHERE is_banned=0 ORDER BY balance DESC LIMIT 20")
+    users = c.fetchall()
+    conn.close()
+    
+    text = "🔝 ТОП-20\n\n"
+    for i, u in enumerate(users):
+        text += f"{i+1}. @{u[0] or '—'} — {u[1]:.1f} ⭐\n"
+    
+    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "👑 VIP список")
+def vip_list(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    try:
+        c.execute("SELECT telegram_id, first_name, username, balance, vip_expires FROM users WHERE is_vip=1 AND vip_expires > datetime('now') ORDER BY vip_expires")
+        vips = c.fetchall()
+    except:
+        vips = []
+    
+    conn.close()
+    
+    if not vips:
+        bot.send_message(msg.chat.id, "Нет активных VIP", reply_markup=admin_kb())
+        return
+    
+    text = "👑 АКТИВНЫЕ VIP\n\n"
+    for v in vips:
+        try:
+            expires = datetime.datetime.fromisoformat(v[4])
+            days_left = (expires - datetime.datetime.now()).days
+            text += f"• {v[1]} (@{v[2] or '—'}) — {v[3]:.1f}⭐, осталось {days_left} дн.\n"
+        except:
+            text += f"• {v[1]} (@{v[2] or '—'}) — {v[3]:.1f}⭐\n"
+    
+    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "💳 Платежи")
+def wallet_payments_list(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, user_id, amount, currency, status, created_at FROM wallet_payments ORDER BY id DESC LIMIT 20")
+    payments = c.fetchall()
+    conn.close()
+    
+    if not payments:
+        bot.send_message(msg.chat.id, "Нет платежей через @send", reply_markup=admin_kb())
+        return
+    
+    text = "💳 ПЛАТЕЖИ ЧЕРЕЗ @send\n\n"
+    for p in payments:
+        status_icon = "✅" if p[4] == 'completed' else "⏳" if p[4] == 'pending' else "❌"
+        text += f"#{p[0]} | {p[2]} {p[3]} | {status_icon} {p[4]} | {p[1]}\n"
+    
+    bot.send_message(msg.chat.id, text, reply_markup=admin_kb())
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    text = msg.text.replace('/broadcast', '').strip()
+    if not text:
+        bot.send_message(msg.chat.id, "/broadcast ТЕКСТ")
+        return
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT telegram_id FROM users WHERE is_banned=0")
+    users = c.fetchall()
+    conn.close()
+    
+    sent = 0
+    for u in users:
+        try:
+            bot.send_message(u[0], text)
+            sent += 1
+        except:
+            pass
+    
+    bot.send_message(msg.chat.id, f"✅ Отправлено {sent} пользователям", reply_markup=admin_kb())
+
+@bot.message_handler(func=lambda m: m.text == "✉️ Рассылка")
+def broadcast_prompt(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    bot.send_message(msg.chat.id, "✉️ РАССЫЛКА\n\n/broadcast ТЕКСТ", reply_markup=admin_kb())
+
+@bot.message_handler(commands=['addfake'])
+def add_fake(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    args = msg.text.split()
+    if len(args) < 3:
+        bot.send_message(msg.chat.id, "/addfake @username 1000")
+        return
+    
+    username = args[1]
+    try:
+        balance = float(args[2])
+    except:
+        bot.send_message(msg.chat.id, "Баланс - число")
+        return
+    
+    fake_users = init_fake_top()
+    fake_users.append({"username": username, "balance": balance})
+    fake_users.sort(key=lambda x: x['balance'], reverse=True)
+    
+    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(fake_users, f, ensure_ascii=False, indent=2)
+    
+    bot.send_message(msg.chat.id, f"✅ Добавлен {username}")
+
+@bot.message_handler(commands=['fake_list'])
+def fake_list(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    fake_users = init_fake_top()
+    text = "📋 ФЕЙК-ТОП\n\n"
+    for i, u in enumerate(fake_users[:20]):
+        text += f"{i+1}. {u['username']} — {u['balance']} ⭐\n"
+    
+    bot.send_message(msg.chat.id, text)
+
+@bot.message_handler(commands=['removefake'])
+def remove_fake(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "/removefake @username")
+        return
+    
+    username = args[1]
+    fake_users = init_fake_top()
+    new_list = [u for u in fake_users if u['username'] != username]
+    
+    with open(FAKE_TOP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(new_list, f, ensure_ascii=False, indent=2)
+    
+    bot.send_message(msg.chat.id, f"✅ Удалён {username}")
+
+@bot.message_handler(commands=['givevip'])
+def give_vip(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "/givevip @username")
+        return
+    
+    username = args[1]
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT telegram_id, first_name, is_vip FROM users WHERE username = ?", (username,))
+    user = c.fetchone()
+    conn.close()
+    
+    if not user:
+        bot.send_message(msg.chat.id, "Пользователь не найден")
+        return
+    
+    if user[2]:
+        bot.send_message(msg.chat.id, f"У {user[1]} уже есть VIP")
+        return
+    
+    expires = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
+    update_user(user[0], is_vip=1, vip_expires=expires)
+    bot.send_message(msg.chat.id, f"✅ VIP выдан {user[1]} на 30 дней")
+
+@bot.message_handler(commands=['removevip'])
+def remove_vip(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.send_message(msg.chat.id, "/removevip @username")
+        return
+    
+    username = args[1]
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT telegram_id, first_name FROM users WHERE username = ?", (username,))
+    user = c.fetchone()
+    conn.close()
+    
+    if not user:
+        bot.send_message(msg.chat.id, "Пользователь не найден")
+        return
+    
+    update_user(user[0], is_vip=0, vip_expires=None)
+    bot.send_message(msg.chat.id, f"✅ VIP удален у {user[1]}")
+
+# ========== ЗАПУСК ==========
+if __name__ == "__main__":
+    init_db()
+    init_fake_top()
+    
+    print("🤖 Бот запущен!")
+    print(f"👑 VIP цена: {VIP_PRICE_USDT} USDT")
+    print(f"📊 Обычный лимит: {DAILY_CLICK_LIMIT}")
+    print(f"📊 VIP лимит: {VIP_DAILY_CLICK_LIMIT}")
+    print("💳 Оплата: через @send (Wallet Pay)")
+    print("📢 Реклама: ❌ ОТКЛЮЧЕНА")
+    print("✅ Бот готов к работе!")
+    
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.polling(none_stop=True, skip_pending=True, interval=0)
