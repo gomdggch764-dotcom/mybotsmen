@@ -17,7 +17,7 @@ TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_IDS = [6621617827]
 
 # ========== WALLET PAY (@send) ==========
-WALLET_TOKEN = "630423:AAuDdKYE80k9w5OqlPosVitpIyeGL8XXxg7"
+WALLET_TOKEN = os.getenv('WALLET_TOKEN', '')
 WALLET_API_URL = "https://pay.wallet.tg/api"
 
 MIN_EARN = 0.6
