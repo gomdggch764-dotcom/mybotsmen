@@ -15,16 +15,16 @@ load_dotenv()
 
 TOKEN = os.getenv('BOT_TOKEN')
 CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN', '')
-ADMIN_IDS = [6621617827]
+ADMIN_IDS = [6621617827, 7326365411]
 
 # ========== CRYPTO BOT ==========
 CRYPTO_API_URL = "https://pay.crypt.bot/api"
 
 MIN_EARN = 0.6
-MAX_EARN = 1.0
+MAX_EARN = 1.5
 DAILY_CLICK_LIMIT = 50
 VIP_DAILY_CLICK_LIMIT = 50
-WITHDRAW_MIN = 120
+WITHDRAW_MIN = 50
 WITHDRAW_WAIT_DAYS = 7
 VIP_PRICE_USDT = 1.0
 REFERRAL_BONUS = 3
@@ -334,16 +334,19 @@ def get_active_users():
 def earn_stars(tg_id):
     user = get_user(tg_id)
     if not user:
-        return None, "Пользователь не найден"
+        return None, "Пользователь не найден", 0
     if len(user) > 18 and user[18]:
-        return None, "❌ Вы забанены!"
+        return None, "❌ Вы забанены!", 0
     
     click_limit = get_vip_click_limit(user)
     today = datetime.date.today().isoformat()
     if user[11] == today and user[10] >= click_limit:
-        return None, f"⚠️ Лимит {click_limit} кликов!"
+        return None, f"⚠️ Лимит {click_limit} кликов!", 0
     
     amount = round(random.uniform(MIN_EARN, MAX_EARN), 1)
+    
+    is_lucky = amount >= 1.4
+    
     new_balance = user[4] + amount
     new_total = user[5] + amount
     new_clicks = user[7] + 1
@@ -366,7 +369,7 @@ def earn_stars(tg_id):
                   (bonus, bonus, ref[0]))
         conn.commit()
     conn.close()
-    return amount, None
+    return amount, None, is_lucky
 
 def get_daily_bonus(tg_id):
     user = get_user(tg_id)
@@ -499,16 +502,26 @@ def earn(msg):
         bot.send_message(msg.chat.id, f"⚠️ Подпишитесь:\n\n{channels_text}", reply_markup=sub_keyboard())
         return
     
-    amount, err = earn_stars(uid)
+    amount, err, is_lucky = earn_stars(uid)
     if err:
         bot.send_message(msg.chat.id, err)
         return
     user = get_user(uid)
     click_limit = get_vip_click_limit(user)
     vip_text = " (VIP)" if is_vip_active(user) else ""
-    bot.send_message(msg.chat.id,
-        f"⭐ +{amount} ⭐!\n💰 Баланс: {user[4]:.1f} ⭐\n📊 Сегодня: {user[10]}/{click_limit}{vip_text}",
-        reply_markup=main_kb())
+    
+    if is_lucky:
+        bot.send_message(msg.chat.id,
+            f"🍀 УДАЧА!\n\n"
+            f"⭐ +{amount} ⭐!\n"
+            f"🔥 Ты сегодня клеверный!\n\n"
+            f"💰 Баланс: {user[4]:.1f} ⭐\n"
+            f"📊 Сегодня: {user[10]}/{click_limit}{vip_text}",
+            reply_markup=main_kb())
+    else:
+        bot.send_message(msg.chat.id,
+            f"⭐ +{amount} ⭐!\n💰 Баланс: {user[4]:.1f} ⭐\n📊 Сегодня: {user[10]}/{click_limit}{vip_text}",
+            reply_markup=main_kb())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(msg):
@@ -788,7 +801,7 @@ def withdraw(msg):
     
     args = msg.text.split()
     if len(args) < 2:
-        bot.send_message(msg.chat.id, "Укажите сумму: /withdraw 10")
+        bot.send_message(msg.chat.id, "Укажите сумму: /withdraw 50")
         return
     
     try:
